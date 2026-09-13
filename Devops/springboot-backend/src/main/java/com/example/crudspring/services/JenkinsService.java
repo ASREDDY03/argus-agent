@@ -73,6 +73,9 @@ public class JenkinsService {
     private static final long ALERT_COOLDOWN_MS = 10 * 60 * 1000L;
     private final Map<String, Long> lastAlertTime = new ConcurrentHashMap<>();
 
+    // Latest insights per job — populated by background monitor, merged into WebSocket broadcasts
+    private final Map<String, Map<String, Object>> insightsCache = new ConcurrentHashMap<>();
+
     private boolean canAlert(String jobName) {
         long now = System.currentTimeMillis();
         Long last = lastAlertTime.get(jobName);
@@ -390,11 +393,46 @@ public class JenkinsService {
                     }
                 }
             }
+            // Merge cached anomaly/risk data so every broadcast carries insights
+            for (JenkinsJob job : result) {
+                Map<String, Object> cached = insightsCache.get(job.getJobName());
+                if (cached != null) {
+                    job.setAnomaly(Boolean.TRUE.equals(cached.get("anomaly")));
+                    job.setRiskLevel((String) cached.get("riskLevel"));
+                    Object fp = cached.get("failureProbability");
+                    if (fp instanceof Number) job.setFailureProbability(((Number) fp).doubleValue());
+                }
+            }
+
             log.info("[JENKINS] Returning {} jobs", result.size());
             return result;
         } catch (Exception e) {
             log.warn("[JENKINS] Jenkins API call failed: {}", e.getMessage());
             return java.util.Collections.emptyList();
+        }
+    }
+
+    /**
+     * Called by the background monitor. Runs getJobInsights() for every known job
+     * and caches the result so it's baked into the next WebSocket broadcast.
+     */
+    public void monitorAllJobs() {
+        List<JenkinsJob> jobs;
+        try {
+            jobs = getAllJobs();
+        } catch (Exception e) {
+            log.warn("[MONITOR] Could not fetch job list: {}", e.getMessage());
+            return;
+        }
+        for (JenkinsJob job : jobs) {
+            try {
+                Map<String, Object> insights = getJobInsights(job.getJobName());
+                insightsCache.put(job.getJobName(), insights);
+                log.debug("[MONITOR] Cached insights for job={} anomaly={} risk={}",
+                    job.getJobName(), insights.get("anomaly"), insights.get("riskLevel"));
+            } catch (Exception e) {
+                log.warn("[MONITOR] Insight check failed for job={}: {}", job.getJobName(), e.getMessage());
+            }
         }
     }
 

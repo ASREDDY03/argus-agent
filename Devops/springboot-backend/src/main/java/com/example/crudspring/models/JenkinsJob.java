@@ -8,6 +8,11 @@ public class JenkinsJob {
     private LocalDateTime timestamp;
     private Long duration;
 
+    // Populated by background monitor — baked into every WebSocket broadcast
+    private Boolean anomaly;
+    private String riskLevel;
+    private Double failureProbability;
+
     public JenkinsJob() {}
 
     public JenkinsJob(String jobName, String status, LocalDateTime timestamp, Long duration) {
@@ -17,7 +22,6 @@ public class JenkinsJob {
         this.duration = duration;
     }
 
-    // Getters and setters
     public String getJobName() { return jobName; }
     public void setJobName(String jobName) { this.jobName = jobName; }
     public String getStatus() { return status; }
@@ -26,4 +30,10 @@ public class JenkinsJob {
     public void setTimestamp(LocalDateTime timestamp) { this.timestamp = timestamp; }
     public Long getDuration() { return duration; }
     public void setDuration(Long duration) { this.duration = duration; }
+    public Boolean getAnomaly() { return anomaly; }
+    public void setAnomaly(Boolean anomaly) { this.anomaly = anomaly; }
+    public String getRiskLevel() { return riskLevel; }
+    public void setRiskLevel(String riskLevel) { this.riskLevel = riskLevel; }
+    public Double getFailureProbability() { return failureProbability; }
+    public void setFailureProbability(Double failureProbability) { this.failureProbability = failureProbability; }
 } 

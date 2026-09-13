@@ -43,6 +43,24 @@ public class JenkinsPoller {
         }
     }
 
+    /**
+     * Runs anomaly detection + failure prediction for ALL jobs every 2 minutes.
+     * Results are cached in JenkinsService and merged into the next WebSocket broadcast,
+     * so risk badges appear in the table without the user having to click each job.
+     */
+    @Scheduled(fixedDelay = 120000, initialDelay = 60000)
+    public void monitorAllJobs() {
+        try {
+            jenkinsService.monitorAllJobs();
+            // Push updated job list (now with anomaly/risk data) to connected clients
+            if (jobUpdateHandler.connectedClients() > 0) {
+                pushNow();
+            }
+        } catch (Exception e) {
+            log.warn("[MONITOR] Background monitor failed: {}", e.getMessage());
+        }
+    }
+
     /** Called manually (e.g. after a user-triggered refresh) to push immediately. */
     public void pushNow() {
         try {
