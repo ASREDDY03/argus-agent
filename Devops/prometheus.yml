@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'springboot-backend'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['springboot-backend:8020']
+
+  - job_name: 'jenkins'
+    metrics_path: '/prometheus/'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+rule_files:
+  - "alert.rules.yml"

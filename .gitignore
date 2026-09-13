@@ -1,0 +1,40 @@
+# Added by code-review-graph
+.code-review-graph/
+
+# Secrets — never commit
+.env
+**/.env
+
+# Agent prompt contains real credentials
+Devops/agent-prompt.md
+
+# Python
+__pycache__/
+*.pyc
+Devops/ml-service/.venv/
+Devops/ml-service/.ml/
+Devops/argus-agent/logs/
+
+# Java build output
+Devops/springboot-backend/target/
+
+# Node
+Devops/react-frontend/node_modules/
+Devops/react-frontend/build/
+
+# IDE
+.idea/
+*.iml
+
+# Local certs
+Devops/certs/
+
+# Claude Code — personal memory, never commit
+.claude/
+.mcp.json
+
+# macOS
+.DS_Store
+
+# Backup files
+*.orig

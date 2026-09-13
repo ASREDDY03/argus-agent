@@ -1,0 +1,103 @@
+{
+  "title": "Argus Agent — Jenkins Pipelines",
+  "uid": "jenkins-pipelines",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Builds",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "sum(jenkins_builds_last_build_result_ordinal)", "legendFormat": "Total Builds" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue", "value": null }] } } }
+    },
+    {
+      "id": 2,
+      "title": "Successful Builds",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "count(jenkins_builds_last_build_result_ordinal == 0)", "legendFormat": "Success" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }] } } }
+    },
+    {
+      "id": 3,
+      "title": "Failed Builds",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "count(jenkins_builds_last_build_result_ordinal == 1)", "legendFormat": "Failed" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "red", "value": null }] } } }
+    },
+    {
+      "id": 4,
+      "title": "Jobs in Queue",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "jenkins_queue_size_value", "legendFormat": "Queued" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "yellow", "value": null }] } } }
+    },
+    {
+      "id": 5,
+      "title": "Build Duration per Job (last build)",
+      "type": "bargauge",
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "jenkins_builds_last_build_duration_milliseconds / 1000", "legendFormat": "{{job}}" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "horizontal" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 30 },
+            { "color": "red", "value": 60 }
+          ]}
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Build Result per Job",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "jenkins_builds_last_build_result_ordinal", "legendFormat": "{{job}}", "instant": true }
+      ],
+      "transformations": [{ "id": "organize", "options": {} }]
+    },
+    {
+      "id": 7,
+      "title": "Build Duration Trend (all jobs)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "jenkins_builds_last_build_duration_milliseconds / 1000", "legendFormat": "{{job}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 8,
+      "title": "Executor Usage",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 6 },
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "jenkins_executor_in_use_value", "legendFormat": "In Use" }, { "expr": "jenkins_executor_count_value", "legendFormat": "Total" }]
+    },
+    {
+      "id": 9,
+      "title": "Jenkins JVM Heap",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 6 },
+      "datasource": "Prometheus",
+      "targets": [{ "expr": "jenkins_memory_heap_used / 1024 / 1024", "legendFormat": "Heap Used (MB)" }],
+      "fieldConfig": { "defaults": { "unit": "decmbytes" } }
+    }
+  ],
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {}
+}
