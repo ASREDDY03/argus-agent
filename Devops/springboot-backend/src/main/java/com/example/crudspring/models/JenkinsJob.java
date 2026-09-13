@@ -14,6 +14,7 @@ public class JenkinsJob {
     private Double failureProbability;
     private Double flakinessScore; // 0.0–1.0: fraction of consecutive build pairs that flipped status
     private Boolean flaky;         // true when flakinessScore > 0.4
+    private Integer consecutiveFailures;
 
     public JenkinsJob() {}
 
@@ -42,4 +43,6 @@ public class JenkinsJob {
     public void setFlakinessScore(Double flakinessScore) { this.flakinessScore = flakinessScore; }
     public Boolean getFlaky() { return flaky; }
     public void setFlaky(Boolean flaky) { this.flaky = flaky; }
+    public Integer getConsecutiveFailures() { return consecutiveFailures; }
+    public void setConsecutiveFailures(Integer consecutiveFailures) { this.consecutiveFailures = consecutiveFailures; }
 } 

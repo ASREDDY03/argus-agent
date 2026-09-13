@@ -126,6 +126,20 @@ function TrendBadge({ trend }) {
     );
 }
 
+function StreakBadge({ count }) {
+    if (!count || count < 2) return null;
+    const color = count >= 5 ? '#ef4444' : count >= 3 ? '#f59e0b' : '#f97316';
+    const bg    = count >= 5 ? 'rgba(239,68,68,0.12)' : count >= 3 ? 'rgba(245,158,11,0.12)' : 'rgba(249,115,22,0.12)';
+    return (
+        <span title={`${count} consecutive failures`} style={{
+            fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+            color, background: bg, letterSpacing: '0.03em',
+        }}>
+            ✗{count} streak
+        </span>
+    );
+}
+
 function RiskBadge({ riskLevel, probability }) {
     if (!riskLevel || riskLevel === 'LOW') return null;
     const cfg = {
@@ -667,6 +681,7 @@ class JenkinsDashboardComponent extends Component {
                                                 <td>
                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                                         {job.anomaly && <span className="anomaly-badge">⚠ Anomaly</span>}
+                                                        <StreakBadge count={job.consecutiveFailures} />
                                                         <RiskBadge riskLevel={job.riskLevel} probability={job.failureProbability} />
                                                         <FlakyBadge flaky={job.flaky} score={job.flakinessScore} />
                                                     </div>
@@ -920,6 +935,14 @@ class JenkinsDashboardComponent extends Component {
                                                                         {Math.round(jobDetails.flakinessScore * 100)}% — stable
                                                                     </span>
                                                                 )}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                    {jobDetails.consecutiveFailures > 0 && (
+                                                        <div className="summary-card">
+                                                            <div className="summary-card-label">Failure Streak</div>
+                                                            <div className="summary-card-value" style={{ paddingTop: 2 }}>
+                                                                <StreakBadge count={jobDetails.consecutiveFailures} />
                                                             </div>
                                                         </div>
                                                     )}
