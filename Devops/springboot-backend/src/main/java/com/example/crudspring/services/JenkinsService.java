@@ -732,6 +732,38 @@ public class JenkinsService {
     }
 
     /**
+     * Fetches pipeline stage breakdown for the latest build via the Pipeline API.
+     * Returns an empty list for freestyle jobs (they have no stages).
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> getJobStages(String jobName) {
+        try {
+            String url = jenkinsUrl + "/job/" + jobName + "/lastBuild/wfapi/describe";
+            ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.GET, buildAuthEntity(), Map.class);
+            Map<String, Object> body = (Map<String, Object>) response.getBody();
+            if (body == null) return java.util.Collections.emptyList();
+            List<Map<String, Object>> raw = (List<Map<String, Object>>) body.get("stages");
+            if (raw == null) return java.util.Collections.emptyList();
+
+            List<Map<String, Object>> stages = new java.util.ArrayList<>();
+            for (Map<String, Object> s : raw) {
+                Map<String, Object> stage = new HashMap<>();
+                stage.put("name",            s.get("name"));
+                stage.put("status",          s.get("status"));
+                stage.put("durationMillis",  s.get("durationMillis"));
+                stage.put("durationSeconds", s.get("durationMillis") instanceof Number
+                    ? ((Number) s.get("durationMillis")).longValue() / 1000 : 0);
+                stages.add(stage);
+            }
+            log.info("[STAGES] job={} stages={}", jobName, stages.size());
+            return stages;
+        } catch (Exception e) {
+            log.debug("[STAGES] Not available for job={}: {}", jobName, e.getMessage());
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    /**
      * Fetches the last build console log from Jenkins.
      * Returns empty string if unavailable (Jenkins down, no builds yet, etc.).
      */

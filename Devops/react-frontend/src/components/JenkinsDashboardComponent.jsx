@@ -161,6 +161,50 @@ function ProbabilityBar({ probability, riskLevel }) {
     );
 }
 
+function StageTimeline({ stages }) {
+    if (!stages || stages.length === 0) return null;
+    const maxDur = Math.max(...stages.map(s => s.durationSeconds || 0), 1);
+    const statusColor = s => s === 'SUCCESS' ? '#22c55e' : s === 'FAILED' ? '#ef4444' : s === 'IN_PROGRESS' ? '#4361ee' : '#94a3b8';
+    const statusIcon  = s => s === 'SUCCESS' ? '✓' : s === 'FAILED' ? '✗' : s === 'IN_PROGRESS' ? '…' : '○';
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {stages.map((stage, i) => {
+                const color = statusColor(stage.status);
+                const pct   = maxDur > 0 ? Math.min((stage.durationSeconds / maxDur) * 100, 100) : 0;
+                return (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        {/* connector line */}
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                            {i > 0 && <div style={{ width: 1, height: 6, background: 'rgba(255,255,255,0.1)' }} />}
+                            <div style={{
+                                width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+                                background: `${color}22`, border: `2px solid ${color}`,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: 10, fontWeight: 700, color,
+                            }}>
+                                {statusIcon(stage.status)}
+                            </div>
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                                <span style={{ fontSize: 12, color: 'var(--text-primary)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {stage.name}
+                                </span>
+                                <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0, marginLeft: 8 }}>
+                                    {stage.durationSeconds}s
+                                </span>
+                            </div>
+                            <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 2, opacity: 0.7 }} />
+                            </div>
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
 function DurationBar({ value, max }) {
     const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
     return (
@@ -199,6 +243,7 @@ class JenkinsDashboardComponent extends Component {
             error: null,
             jobDetails: null,
             jobSummary: null,
+            jobStages: null,
             selectedJob: null,
             showDetails: false,
             showConfig: false,
@@ -291,7 +336,7 @@ class JenkinsDashboardComponent extends Component {
     }
 
     fetchJobDetails(job) {
-        this.setState({ selectedJob: job, jobDetails: null, jobSummary: null, showDetails: true });
+        this.setState({ selectedJob: job, jobDetails: null, jobSummary: null, jobStages: null, showDetails: true });
         const call = this.state.demoMode
             ? JenkinsService.getMockJobDetails(job.jobName)
             : JenkinsService.getJobDetails(job.jobName);
@@ -300,6 +345,9 @@ class JenkinsDashboardComponent extends Component {
         if (!this.state.demoMode) {
             JenkinsService.getJobSummary(job.jobName)
                 .then(res => this.setState({ jobSummary: res.data }))
+                .catch(() => {});
+            JenkinsService.getJobStages(job.jobName)
+                .then(res => this.setState({ jobStages: res.data }))
                 .catch(() => {});
         }
     }
@@ -395,7 +443,7 @@ class JenkinsDashboardComponent extends Component {
     }
 
     render() {
-        const { jobs, loading, error, jobDetails, jobSummary, selectedJob, showDetails,
+        const { jobs, loading, error, jobDetails, jobSummary, jobStages, selectedJob, showDetails,
                 showConfig, demoMode, activeTab, search, jenkinsConfig,
                 triggeringJob, triggerMsg, trendsData, loadingTrends, wsConnected } = this.state;
 
@@ -906,6 +954,14 @@ class JenkinsDashboardComponent extends Component {
                                                         </div>
                                                     )}
                                                 </div>
+                                            </div>
+                                        )}
+
+                                        {/* Pipeline stages */}
+                                        {jobStages && jobStages.length > 0 && (
+                                            <div>
+                                                <div className="section-title">Pipeline Stages</div>
+                                                <StageTimeline stages={jobStages} />
                                             </div>
                                         )}
 

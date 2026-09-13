@@ -40,6 +40,10 @@ class JenkinsService {
         return axios.get(`${API_BASE_URL}/jenkins/mock/${encodeURIComponent(jobName)}`);
     }
 
+    getJobStages(jobName) {
+        return axios.get(`${API_BASE_URL}/jobs/${encodeURIComponent(jobName)}/stages`);
+    }
+
     triggerBuild(jobName) {
         return axios.post(`${API_BASE_URL}/jobs/${encodeURIComponent(jobName)}/trigger`);
     }
