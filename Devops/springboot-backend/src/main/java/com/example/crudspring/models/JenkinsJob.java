@@ -12,6 +12,8 @@ public class JenkinsJob {
     private Boolean anomaly;
     private String riskLevel;
     private Double failureProbability;
+    private Double flakinessScore; // 0.0–1.0: fraction of consecutive build pairs that flipped status
+    private Boolean flaky;         // true when flakinessScore > 0.4
 
     public JenkinsJob() {}
 
@@ -36,4 +38,8 @@ public class JenkinsJob {
     public void setRiskLevel(String riskLevel) { this.riskLevel = riskLevel; }
     public Double getFailureProbability() { return failureProbability; }
     public void setFailureProbability(Double failureProbability) { this.failureProbability = failureProbability; }
+    public Double getFlakinessScore() { return flakinessScore; }
+    public void setFlakinessScore(Double flakinessScore) { this.flakinessScore = flakinessScore; }
+    public Boolean getFlaky() { return flaky; }
+    public void setFlaky(Boolean flaky) { this.flaky = flaky; }
 } 

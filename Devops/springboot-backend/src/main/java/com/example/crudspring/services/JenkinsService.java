@@ -76,6 +76,22 @@ public class JenkinsService {
     // Latest insights per job — populated by background monitor, merged into WebSocket broadcasts
     private final Map<String, Map<String, Object>> insightsCache = new ConcurrentHashMap<>();
 
+    /**
+     * Flakiness = fraction of consecutive build pairs that flipped status (0.0–1.0).
+     * Requires ≥3 builds; returns 0.0 otherwise.
+     * Example: S F S F S → 4 flips / 4 pairs = 1.0 (maximally flaky)
+     */
+    private double computeFlakiness(List<JenkinsJob> history) {
+        if (history.size() < 3) return 0.0;
+        int flips = 0;
+        for (int i = 1; i < history.size(); i++) {
+            String prev = history.get(i - 1).getStatus();
+            String curr = history.get(i).getStatus();
+            if (prev != null && !prev.equalsIgnoreCase(curr)) flips++;
+        }
+        return Math.round((double) flips / (history.size() - 1) * 100.0) / 100.0;
+    }
+
     private boolean canAlert(String jobName) {
         long now = System.currentTimeMillis();
         Long last = lastAlertTime.get(jobName);
@@ -401,6 +417,9 @@ public class JenkinsService {
                     job.setRiskLevel((String) cached.get("riskLevel"));
                     Object fp = cached.get("failureProbability");
                     if (fp instanceof Number) job.setFailureProbability(((Number) fp).doubleValue());
+                    Object fs = cached.get("flakinessScore");
+                    if (fs instanceof Number) job.setFlakinessScore(((Number) fs).doubleValue());
+                    job.setFlaky(Boolean.TRUE.equals(cached.get("flaky")));
                 }
             }
 
@@ -671,19 +690,28 @@ public class JenkinsService {
             }
         }
 
+        double flakinessScore = computeFlakiness(jobs);
         result.put("anomaly", anomaly);
         result.put("insight", insight);
         result.put("failureProbability", failureProbability);
         result.put("riskLevel", riskLevel);
-        log.info("[RESULT] job={} anomaly={} risk={}", jobName, anomaly, riskLevel);
+        result.put("flakinessScore", flakinessScore);
+        result.put("flaky", flakinessScore > 0.4);
+        log.info("[RESULT] job={} anomaly={} risk={} flakiness={}", jobName, anomaly, riskLevel, flakinessScore);
         return result;
     }
 
     public List<JenkinsJob> getMockJobs() {
         List<JenkinsJob> jobs = new java.util.ArrayList<>();
-        jobs.add(new JenkinsJob("frontend-deploy", "SUCCESS", LocalDateTime.now().minusMinutes(5), 45L));
-        jobs.add(new JenkinsJob("backend-api", "FAILURE", LocalDateTime.now().minusMinutes(12), 30L));
-        jobs.add(new JenkinsJob("ml-pipeline", "SUCCESS", LocalDateTime.now().minusMinutes(30), 90L));
+        JenkinsJob fe = new JenkinsJob("frontend-deploy", "SUCCESS", LocalDateTime.now().minusMinutes(5), 45L);
+        fe.setFlakinessScore(0.0); fe.setFlaky(false);
+        jobs.add(fe);
+        JenkinsJob be = new JenkinsJob("backend-api", "FAILURE", LocalDateTime.now().minusMinutes(12), 30L);
+        be.setFlakinessScore(0.5); be.setFlaky(true);
+        jobs.add(be);
+        JenkinsJob ml = new JenkinsJob("ml-pipeline", "SUCCESS", LocalDateTime.now().minusMinutes(30), 90L);
+        ml.setFlakinessScore(0.0); ml.setFlaky(false);
+        jobs.add(ml);
         return jobs;
     }
 
@@ -725,9 +753,12 @@ public class JenkinsService {
                 insight = "No mock data available for job: " + jobName;
         }
 
+        double mockFlakiness = "backend-api".equals(jobName) ? 0.5 : 0.0;
         result.put("history", history);
         result.put("anomaly", anomaly);
         result.put("insight", insight);
+        result.put("flakinessScore", mockFlakiness);
+        result.put("flaky", mockFlakiness > 0.4);
         return result;
     }
 

@@ -144,6 +144,19 @@ function RiskBadge({ riskLevel, probability }) {
     );
 }
 
+function FlakyBadge({ flaky, score }) {
+    if (!flaky) return null;
+    const pct = Math.round((score || 0) * 100);
+    return (
+        <span title={`Flakiness score: ${pct}% of consecutive build pairs flipped status`} style={{
+            fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+            color: '#f59e0b', background: 'rgba(245,158,11,0.12)', letterSpacing: '0.03em',
+        }}>
+            ⚡ FLAKY {pct}%
+        </span>
+    );
+}
+
 function ProbabilityBar({ probability, riskLevel }) {
     if (probability == null) return null;
     const pct = Math.round(probability * 100);
@@ -607,6 +620,7 @@ class JenkinsDashboardComponent extends Component {
                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                                         {job.anomaly && <span className="anomaly-badge">⚠ Anomaly</span>}
                                                         <RiskBadge riskLevel={job.riskLevel} probability={job.failureProbability} />
+                                                        <FlakyBadge flaky={job.flaky} score={job.flakinessScore} />
                                                     </div>
                                                 </td>
                                                 <td>
@@ -848,6 +862,19 @@ class JenkinsDashboardComponent extends Component {
                                                             <TrendBadge trend={drawerTrends.trend} />
                                                         </div>
                                                     </div>
+                                                    {jobDetails.flakinessScore != null && (
+                                                        <div className="summary-card">
+                                                            <div className="summary-card-label">Flakiness</div>
+                                                            <div className="summary-card-value" style={{ paddingTop: 2 }}>
+                                                                <FlakyBadge flaky={jobDetails.flaky} score={jobDetails.flakinessScore} />
+                                                                {!jobDetails.flaky && (
+                                                                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                                                        {Math.round(jobDetails.flakinessScore * 100)}% — stable
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                 </div>
 
                                                 {/* Duration sparkline */}
