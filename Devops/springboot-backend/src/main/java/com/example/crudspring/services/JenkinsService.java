@@ -1,7 +1,9 @@
 package com.example.crudspring.services;
 
+import com.example.crudspring.models.JenkinsConfig;
 import com.example.crudspring.models.JenkinsJob;
 import com.example.crudspring.models.JenkinsBuildSummary;
+import com.example.crudspring.repository.JenkinsConfigRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
@@ -58,46 +60,61 @@ public class JenkinsService {
     private final MeterRegistry meterRegistry;
     private final SlackAlertService slackAlertService;
     private final ClaudeInsightService claudeInsightService;
+    private final JenkinsConfigRepository configRepository;
 
     // Tracks last known status per job for recovery detection
     private final Map<String, String> lastKnownStatus = new ConcurrentHashMap<>();
 
     public JenkinsService(MeterRegistry meterRegistry, SlackAlertService slackAlertService,
-                          ClaudeInsightService claudeInsightService) {
+                          ClaudeInsightService claudeInsightService,
+                          JenkinsConfigRepository configRepository) {
         this.meterRegistry = meterRegistry;
         this.slackAlertService = slackAlertService;
         this.claudeInsightService = claudeInsightService;
+        this.configRepository = configRepository;
     }
 
     @PostConstruct
     private void initializeDefaults() {
-        this.jenkinsUrl = this.defaultJenkinsUrl;
-        this.jobName = this.defaultJobName;
-        this.jenkinsUser = this.defaultJenkinsUser;
-        this.jenkinsToken = this.defaultJenkinsToken;
+        // Load persisted config from DB first; fall back to env/application.properties values
+        configRepository.findTopByOrderByIdDesc().ifPresentOrElse(saved -> {
+            this.jenkinsUrl   = saved.getUrl();
+            this.jobName      = saved.getJob();
+            this.jenkinsUser  = saved.getUser();
+            this.jenkinsToken = saved.getToken();
+            log.info("[CONFIG] Loaded Jenkins config from database");
+        }, () -> {
+            this.jenkinsUrl   = this.defaultJenkinsUrl;
+            this.jobName      = this.defaultJobName;
+            this.jenkinsUser  = this.defaultJenkinsUser;
+            this.jenkinsToken = this.defaultJenkinsToken;
+            log.info("[CONFIG] Using default Jenkins config from environment");
+        });
     }
 
     public Map<String, Object> updateJenkinsConfig(Map<String, String> config) {
         Map<String, Object> result = new HashMap<>();
         try {
-            if (config.containsKey("url")) {
-                this.jenkinsUrl = config.get("url");
-            }
-            if (config.containsKey("user")) {
-                this.jenkinsUser = config.get("user");
-            }
-            if (config.containsKey("token")) {
-                this.jenkinsToken = config.get("token");
-            }
-            if (config.containsKey("job")) {
-                this.jobName = config.get("job");
-            }
+            if (config.containsKey("url"))   this.jenkinsUrl   = config.get("url");
+            if (config.containsKey("user"))  this.jenkinsUser  = config.get("user");
+            if (config.containsKey("token")) this.jenkinsToken = config.get("token");
+            if (config.containsKey("job"))   this.jobName      = config.get("job");
 
             // Test the connection with new credentials
             List<JenkinsJob> jobs = getAllJobs();
-            
+
+            // Persist to DB so config survives container restarts
+            JenkinsConfig saved = configRepository.findTopByOrderByIdDesc()
+                .orElseGet(JenkinsConfig::new);
+            saved.setUrl(this.jenkinsUrl);
+            saved.setJob(this.jobName);
+            saved.setUser(this.jenkinsUser);
+            saved.setToken(this.jenkinsToken);
+            configRepository.save(saved);
+            log.info("[CONFIG] Jenkins config saved to database");
+
             result.put("status", "success");
-            result.put("message", "Jenkins configuration updated successfully");
+            result.put("message", "Jenkins configuration updated and saved");
             result.put("jobCount", jobs.size());
             result.put("jobs", jobs);
         } catch (Exception e) {
