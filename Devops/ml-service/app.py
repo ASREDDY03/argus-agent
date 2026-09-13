@@ -30,6 +30,11 @@ def init_db():
             ts        DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # Unique index makes INSERT OR IGNORE actually deduplicate rows
+    conn.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_build
+        ON build_history (job_name, duration, status)
+    ''')
     conn.commit()
     conn.close()
 
