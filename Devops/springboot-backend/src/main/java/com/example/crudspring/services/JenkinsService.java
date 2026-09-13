@@ -48,11 +48,12 @@ public class JenkinsService {
     @Value("${jenkins.token}")
     private String defaultJenkinsToken;
 
-    // Dynamic configuration - can be updated via API
+    // Dynamic configuration - can be updated via API and persisted per client
     private String jenkinsUrl;
     private String jobName;
     private String jenkinsUser;
     private String jenkinsToken;
+    private String slackWebhookUrl; // per-client, stored in DB
 
     @Value("${ml.service.url}")
     private String mlServiceUrl;
@@ -83,10 +84,11 @@ public class JenkinsService {
     private void initializeDefaults() {
         // Load persisted config from DB first; fall back to env/application.properties values
         configRepository.findTopByOrderByIdDesc().ifPresentOrElse(saved -> {
-            this.jenkinsUrl   = saved.getUrl();
-            this.jobName      = saved.getJob();
-            this.jenkinsUser  = saved.getUser();
-            this.jenkinsToken = saved.getToken();
+            this.jenkinsUrl      = saved.getUrl();
+            this.jobName         = saved.getJob();
+            this.jenkinsUser     = saved.getUser();
+            this.jenkinsToken    = saved.getToken();
+            this.slackWebhookUrl = saved.getSlackWebhookUrl();
             log.info("[CONFIG] Loaded Jenkins config from database");
         }, () -> {
             this.jenkinsUrl   = this.defaultJenkinsUrl;
@@ -100,10 +102,11 @@ public class JenkinsService {
     public Map<String, Object> updateJenkinsConfig(Map<String, String> config) {
         Map<String, Object> result = new HashMap<>();
         try {
-            if (config.containsKey("url"))   this.jenkinsUrl   = config.get("url");
-            if (config.containsKey("user"))  this.jenkinsUser  = config.get("user");
-            if (config.containsKey("token")) this.jenkinsToken = config.get("token");
-            if (config.containsKey("job"))   this.jobName      = config.get("job");
+            if (config.containsKey("url"))              this.jenkinsUrl      = config.get("url");
+            if (config.containsKey("user"))             this.jenkinsUser     = config.get("user");
+            if (config.containsKey("token"))            this.jenkinsToken    = config.get("token");
+            if (config.containsKey("job"))              this.jobName         = config.get("job");
+            if (config.containsKey("slackWebhookUrl"))  this.slackWebhookUrl = config.get("slackWebhookUrl");
 
             // Test the connection with new credentials
             List<JenkinsJob> jobs = getAllJobs();
@@ -115,6 +118,7 @@ public class JenkinsService {
             saved.setJob(this.jobName);
             saved.setUser(this.jenkinsUser);
             saved.setToken(this.jenkinsToken);
+            saved.setSlackWebhookUrl(this.slackWebhookUrl);
             configRepository.save(saved);
             log.info("[CONFIG] Jenkins config saved to database");
 
@@ -135,15 +139,20 @@ public class JenkinsService {
         config.put("url", this.jenkinsUrl != null ? this.jenkinsUrl : this.defaultJenkinsUrl);
         config.put("user", this.jenkinsUser != null ? this.jenkinsUser : this.defaultJenkinsUser);
         config.put("job", this.jobName != null ? this.jobName : this.defaultJobName);
-        
-        // Handle token display safely
+
+        // Mask token for display
         String tokenToShow = this.jenkinsToken != null ? this.jenkinsToken : this.defaultJenkinsToken;
         if (tokenToShow != null && tokenToShow.length() > 4 && !tokenToShow.equals("your-jenkins-token-here")) {
             config.put("token", "***" + tokenToShow.substring(tokenToShow.length() - 4));
         } else {
             config.put("token", "");
         }
-        
+
+        // Mask Slack webhook for display (show only that it's configured)
+        boolean slackConfigured = this.slackWebhookUrl != null && !this.slackWebhookUrl.isBlank();
+        config.put("slackConfigured", slackConfigured);
+        config.put("slackWebhookUrl", slackConfigured ? "***configured***" : "");
+
         return config;
     }
 
@@ -527,7 +536,7 @@ public class JenkinsService {
 
             // Check for recovery: was failing, now success
             if ("SUCCESS".equalsIgnoreCase(currentStatus) && "FAILURE".equalsIgnoreCase(previousStatus)) {
-                slackAlertService.sendRecoveryAlert(jobName, latest.getDuration());
+                slackAlertService.sendRecoveryAlert(slackWebhookUrl, jobName, latest.getDuration());
             }
 
             // ML anomaly detection
@@ -564,9 +573,9 @@ public class JenkinsService {
                 String buildLog = fetchBuildLog(jobName);
                 insight = claudeInsightService.getInsight(jobName, latest.getDuration(), isFailure, buildLog);
                 if (isFailure) {
-                    slackAlertService.sendBuildFailureAlert(jobName, latest.getDuration(), insight);
+                    slackAlertService.sendBuildFailureAlert(slackWebhookUrl, jobName, latest.getDuration(), insight);
                 } else {
-                    slackAlertService.sendAnomalyAlert(jobName, latest.getDuration(), insight);
+                    slackAlertService.sendAnomalyAlert(slackWebhookUrl, jobName, latest.getDuration(), insight);
                 }
             }
 
