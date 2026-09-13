@@ -69,6 +69,23 @@ public class JenkinsService {
     // Tracks last known status per job for recovery detection
     private final Map<String, String> lastKnownStatus = new ConcurrentHashMap<>();
 
+    // Alert cooldown — suppress repeated Slack alerts for the same job (10 min)
+    private static final long ALERT_COOLDOWN_MS = 10 * 60 * 1000L;
+    private final Map<String, Long> lastAlertTime = new ConcurrentHashMap<>();
+
+    // Latest insights per job — populated by background monitor, merged into WebSocket broadcasts
+    private final Map<String, Map<String, Object>> insightsCache = new ConcurrentHashMap<>();
+
+    private boolean canAlert(String jobName) {
+        long now = System.currentTimeMillis();
+        Long last = lastAlertTime.get(jobName);
+        return last == null || (now - last) >= ALERT_COOLDOWN_MS;
+    }
+
+    private void markAlerted(String jobName) {
+        lastAlertTime.put(jobName, System.currentTimeMillis());
+    }
+
     public JenkinsService(MeterRegistry meterRegistry, SlackAlertService slackAlertService,
                           ClaudeInsightService claudeInsightService,
                           JenkinsConfigRepository configRepository,
@@ -376,11 +393,46 @@ public class JenkinsService {
                     }
                 }
             }
+            // Merge cached anomaly/risk data so every broadcast carries insights
+            for (JenkinsJob job : result) {
+                Map<String, Object> cached = insightsCache.get(job.getJobName());
+                if (cached != null) {
+                    job.setAnomaly(Boolean.TRUE.equals(cached.get("anomaly")));
+                    job.setRiskLevel((String) cached.get("riskLevel"));
+                    Object fp = cached.get("failureProbability");
+                    if (fp instanceof Number) job.setFailureProbability(((Number) fp).doubleValue());
+                }
+            }
+
             log.info("[JENKINS] Returning {} jobs", result.size());
             return result;
         } catch (Exception e) {
             log.warn("[JENKINS] Jenkins API call failed: {}", e.getMessage());
             return java.util.Collections.emptyList();
+        }
+    }
+
+    /**
+     * Called by the background monitor. Runs getJobInsights() for every known job
+     * and caches the result so it's baked into the next WebSocket broadcast.
+     */
+    public void monitorAllJobs() {
+        List<JenkinsJob> jobs;
+        try {
+            jobs = getAllJobs();
+        } catch (Exception e) {
+            log.warn("[MONITOR] Could not fetch job list: {}", e.getMessage());
+            return;
+        }
+        for (JenkinsJob job : jobs) {
+            try {
+                Map<String, Object> insights = getJobInsights(job.getJobName());
+                insightsCache.put(job.getJobName(), insights);
+                log.debug("[MONITOR] Cached insights for job={} anomaly={} risk={}",
+                    job.getJobName(), insights.get("anomaly"), insights.get("riskLevel"));
+            } catch (Exception e) {
+                log.warn("[MONITOR] Insight check failed for job={}: {}", job.getJobName(), e.getMessage());
+            }
         }
     }
 
@@ -534,9 +586,10 @@ public class JenkinsService {
             String currentStatus = latest.getStatus();
             String previousStatus = lastKnownStatus.get(jobName);
 
-            // Check for recovery: was failing, now success
+            // Check for recovery: was failing, now success (no cooldown — recovery always fires once)
             if ("SUCCESS".equalsIgnoreCase(currentStatus) && "FAILURE".equalsIgnoreCase(previousStatus)) {
                 slackAlertService.sendRecoveryAlert(slackWebhookUrl, jobName, latest.getDuration());
+                lastAlertTime.remove(jobName); // reset cooldown so next failure alerts immediately
             }
 
             // ML anomaly detection
@@ -572,10 +625,16 @@ public class JenkinsService {
             if (anomaly) {
                 String buildLog = fetchBuildLog(jobName);
                 insight = claudeInsightService.getInsight(jobName, latest.getDuration(), isFailure, buildLog);
-                if (isFailure) {
-                    slackAlertService.sendBuildFailureAlert(slackWebhookUrl, jobName, latest.getDuration(), insight);
+                if (canAlert(jobName)) {
+                    if (isFailure) {
+                        slackAlertService.sendBuildFailureAlert(slackWebhookUrl, jobName, latest.getDuration(), insight);
+                    } else {
+                        slackAlertService.sendAnomalyAlert(slackWebhookUrl, jobName, latest.getDuration(), insight);
+                    }
+                    markAlerted(jobName);
+                    log.info("[ALERT] Slack alert sent for job={}", jobName);
                 } else {
-                    slackAlertService.sendAnomalyAlert(slackWebhookUrl, jobName, latest.getDuration(), insight);
+                    log.info("[ALERT] Suppressed — cooldown active for job={}", jobName);
                 }
             }
 
