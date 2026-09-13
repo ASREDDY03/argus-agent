@@ -126,6 +126,41 @@ function TrendBadge({ trend }) {
     );
 }
 
+function RiskBadge({ riskLevel, probability }) {
+    if (!riskLevel || riskLevel === 'LOW') return null;
+    const cfg = {
+        HIGH:   { label: '▲ HIGH RISK',   color: '#ef4444', bg: 'rgba(239,68,68,0.12)'  },
+        MEDIUM: { label: '◆ MEDIUM RISK', color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' },
+    };
+    const c = cfg[riskLevel];
+    if (!c) return null;
+    return (
+        <span title={`Failure probability: ${Math.round((probability || 0) * 100)}%`} style={{
+            fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+            color: c.color, background: c.bg, letterSpacing: '0.03em',
+        }}>
+            {c.label}
+        </span>
+    );
+}
+
+function ProbabilityBar({ probability, riskLevel }) {
+    if (probability == null) return null;
+    const pct = Math.round(probability * 100);
+    const color = riskLevel === 'HIGH' ? '#ef4444' : riskLevel === 'MEDIUM' ? '#f59e0b' : '#22c55e';
+    return (
+        <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Failure probability (next build)</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color }}>{pct}%</span>
+            </div>
+            <div style={{ height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 3, transition: 'width 0.4s ease' }} />
+            </div>
+        </div>
+    );
+}
+
 function DurationBar({ value, max }) {
     const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
     return (
@@ -569,7 +604,10 @@ class JenkinsDashboardComponent extends Component {
                                                 <td><DurationBar value={job.duration || 0} max={maxDur} /></td>
                                                 <td><span className="ts-text">{formatTs(job.timestamp)}</span></td>
                                                 <td>
-                                                    {job.anomaly && <span className="anomaly-badge">⚠ Anomaly</span>}
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                        {job.anomaly && <span className="anomaly-badge">⚠ Anomaly</span>}
+                                                        <RiskBadge riskLevel={job.riskLevel} probability={job.failureProbability} />
+                                                    </div>
                                                 </td>
                                                 <td>
                                                     <div style={{ display: 'flex', gap: 6 }}>
@@ -767,6 +805,17 @@ class JenkinsDashboardComponent extends Component {
                                                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                                                     build duration or status is outside normal range
                                                 </span>
+                                            </div>
+                                        )}
+
+                                        {/* Failure prediction */}
+                                        {jobDetails.failureProbability != null && (
+                                            <div style={{ background: 'var(--surface-2)', borderRadius: 8, padding: '12px 14px' }}>
+                                                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                    ◆ Failure Prediction
+                                                    <RiskBadge riskLevel={jobDetails.riskLevel} probability={jobDetails.failureProbability} />
+                                                </div>
+                                                <ProbabilityBar probability={jobDetails.failureProbability} riskLevel={jobDetails.riskLevel} />
                                             </div>
                                         )}
 
