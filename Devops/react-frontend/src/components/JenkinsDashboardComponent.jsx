@@ -174,6 +174,7 @@ class JenkinsDashboardComponent extends Component {
             triggerMsg: null,
             trendsData: {},       // jobName → { history, trends }
             loadingTrends: false,
+            wsConnected: false,
             jenkinsConfig: {
                 url: 'http://localhost:8080',
                 user: '',
@@ -181,6 +182,7 @@ class JenkinsDashboardComponent extends Component {
                 job: 'test-job'
             },
         };
+        this.ws = null;
         this.handlePoll          = this.handlePoll.bind(this);
         this.fetchJobDetails     = this.fetchJobDetails.bind(this);
         this.testConnection      = this.testConnection.bind(this);
@@ -197,6 +199,39 @@ class JenkinsDashboardComponent extends Component {
             .then(res => this.setState({ jenkinsConfig: { ...this.state.jenkinsConfig, ...res.data } }))
             .catch(() => {});
         this.fetchJobs();
+        this.connectWebSocket();
+    }
+
+    componentWillUnmount() {
+        if (this.ws) this.ws.close();
+    }
+
+    connectWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = `${protocol}//${window.location.host}/ws/jobs`;
+        const connect = () => {
+            this.ws = new WebSocket(url);
+            this.ws.onopen = () => {
+                this.setState({ wsConnected: true });
+            };
+            this.ws.onmessage = (event) => {
+                try {
+                    const jobs = JSON.parse(event.data);
+                    if (Array.isArray(jobs) && jobs.length > 0) {
+                        this.setState({ jobs, loading: false });
+                    }
+                } catch (_) {}
+            };
+            this.ws.onclose = () => {
+                this.setState({ wsConnected: false });
+                // Reconnect after 5s
+                setTimeout(connect, 5000);
+            };
+            this.ws.onerror = () => {
+                this.ws.close();
+            };
+        };
+        connect();
     }
 
     fetchJobs() {
@@ -326,7 +361,7 @@ class JenkinsDashboardComponent extends Component {
     render() {
         const { jobs, loading, error, jobDetails, jobSummary, selectedJob, showDetails,
                 showConfig, demoMode, activeTab, search, jenkinsConfig,
-                triggeringJob, triggerMsg, trendsData, loadingTrends } = this.state;
+                triggeringJob, triggerMsg, trendsData, loadingTrends, wsConnected } = this.state;
 
         const filtered = jobs.filter(j =>
             !search || j.jobName.toLowerCase().includes(search.toLowerCase())
@@ -354,9 +389,9 @@ class JenkinsDashboardComponent extends Component {
 
                     <div className="topbar-divider" />
 
-                    <div className="live-pill">
-                        <div className="live-dot" />
-                        LIVE
+                    <div className="live-pill" title={wsConnected ? 'WebSocket connected — receiving live updates' : 'WebSocket disconnected — updates paused'} style={{ opacity: wsConnected ? 1 : 0.45 }}>
+                        <div className="live-dot" style={{ background: wsConnected ? undefined : '#94a3b8', animation: wsConnected ? undefined : 'none' }} />
+                        {wsConnected ? 'LIVE' : 'OFFLINE'}
                     </div>
 
                     <div className="topbar-spacer" />
