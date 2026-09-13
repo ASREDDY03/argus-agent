@@ -1,8 +1,10 @@
 package com.example.crudspring.services;
 
+import com.example.crudspring.models.BuildRecord;
 import com.example.crudspring.models.JenkinsConfig;
 import com.example.crudspring.models.JenkinsJob;
 import com.example.crudspring.models.JenkinsBuildSummary;
+import com.example.crudspring.repository.BuildRecordRepository;
 import com.example.crudspring.repository.JenkinsConfigRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -61,17 +63,20 @@ public class JenkinsService {
     private final SlackAlertService slackAlertService;
     private final ClaudeInsightService claudeInsightService;
     private final JenkinsConfigRepository configRepository;
+    private final BuildRecordRepository buildRecordRepository;
 
     // Tracks last known status per job for recovery detection
     private final Map<String, String> lastKnownStatus = new ConcurrentHashMap<>();
 
     public JenkinsService(MeterRegistry meterRegistry, SlackAlertService slackAlertService,
                           ClaudeInsightService claudeInsightService,
-                          JenkinsConfigRepository configRepository) {
+                          JenkinsConfigRepository configRepository,
+                          BuildRecordRepository buildRecordRepository) {
         this.meterRegistry = meterRegistry;
         this.slackAlertService = slackAlertService;
         this.claudeInsightService = claudeInsightService;
         this.configRepository = configRepository;
+        this.buildRecordRepository = buildRecordRepository;
     }
 
     @PostConstruct
@@ -472,14 +477,8 @@ public class JenkinsService {
     private List<JenkinsJob> getJobBuildHistory(String jobName) {
         List<JenkinsJob> history = new java.util.ArrayList<>();
         try {
-            String auth = jenkinsUser + ":" + jenkinsToken;
-            String authHeader = "Basic " + new String(Base64.getEncoder().encode(auth.getBytes(StandardCharsets.UTF_8)));
-            HttpHeaders headers = new HttpHeaders();
-            headers.set("Authorization", authHeader);
-            HttpEntity<String> entity = new HttpEntity<>(headers);
-
             String buildsUrl = jenkinsUrl + "/job/" + jobName + "/api/json?tree=builds[number,result,duration,timestamp]";
-            ResponseEntity<Map> response = restTemplate.exchange(buildsUrl, HttpMethod.GET, entity, Map.class);
+            ResponseEntity<Map> response = restTemplate.exchange(buildsUrl, HttpMethod.GET, buildAuthEntity(), Map.class);
             @SuppressWarnings("unchecked")
             Map<String, Object> body = (Map<String, Object>) response.getBody();
             @SuppressWarnings("unchecked")
@@ -489,14 +488,23 @@ public class JenkinsService {
                 for (Map<String, Object> build : builds) {
                     String status = (String) build.get("result");
                     if (status == null) continue; // skip in-progress
+                    Integer buildNumber = toInteger(build.get("number"));
                     Long duration = ((Number) build.get("duration")).longValue() / 1000;
                     Long ts = ((Number) build.get("timestamp")).longValue();
                     LocalDateTime timestamp = LocalDateTime.ofInstant(Instant.ofEpochMilli(ts), ZoneId.systemDefault());
-                    history.add(new JenkinsJob(jobName, status, timestamp, duration));
+
+                    // Persist to DB if not already stored (idempotent)
+                    if (buildNumber != null && !buildRecordRepository.existsByJobNameAndBuildNumber(jobName, buildNumber)) {
+                        buildRecordRepository.save(new BuildRecord(jobName, buildNumber, status, duration, timestamp));
+                    }
                 }
             }
-            java.util.Collections.reverse(history); // oldest first, newest last
-            log.info("[JENKINS] Fetched ", history.size() + " builds for job: " + jobName);
+
+            // Return the full DB history (oldest first) — survives restarts
+            buildRecordRepository.findByJobNameOrderByTimestampAsc(jobName)
+                .forEach(r -> history.add(new JenkinsJob(r.getJobName(), r.getStatus(), r.getTimestamp(), r.getDurationSeconds())));
+
+            log.info("[JENKINS] History for {}: {} builds (from DB)", jobName, history.size());
         } catch (Exception e) {
             log.info("[JENKINS] Failed to fetch build history for ", jobName + ": " + e.getMessage());
         }
