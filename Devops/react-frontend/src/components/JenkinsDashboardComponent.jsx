@@ -179,7 +179,8 @@ class JenkinsDashboardComponent extends Component {
                 url: 'http://localhost:8080',
                 user: '',
                 token: '',
-                job: 'test-job'
+                job: 'test-job',
+                slackWebhookUrl: '',
             },
         };
         this.ws = null;
@@ -926,6 +927,24 @@ class JenkinsDashboardComponent extends Component {
                                         <input type="password" value={jenkinsConfig.token} onChange={e => this.handleConfigChange('token', e.target.value)} placeholder="Your Jenkins API token" style={{ display: 'block', width: '100%', padding: '10px 13px', fontSize: 14, color: '#0f172a', background: '#f8faff', border: '1.5px solid #cbd5e1', borderRadius: 7, outline: 'none', fontFamily: 'system-ui, sans-serif' }} />
                                     </div>
                                 </div>
+                                {/* Slack Webhook */}
+                                <div style={{ marginBottom: 18 }}>
+                                    <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>
+                                        Slack Webhook URL
+                                        <span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 6 }}>optional</span>
+                                    </label>
+                                    <input
+                                        type="password"
+                                        value={jenkinsConfig.slackWebhookUrl}
+                                        onChange={e => this.handleConfigChange('slackWebhookUrl', e.target.value)}
+                                        placeholder="https://hooks.slack.com/services/..."
+                                        style={{ display: 'block', width: '100%', padding: '10px 13px', fontSize: 14, color: '#0f172a', background: '#f8faff', border: '1.5px solid #cbd5e1', borderRadius: 7, outline: 'none', fontFamily: 'system-ui, sans-serif' }}
+                                    />
+                                    <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                                        Alerts for failures, anomalies, and recoveries go to your channel. Leave blank to disable.
+                                    </div>
+                                </div>
+
                                 <div style={{ fontSize: 12, color: '#64748b', background: '#f8faff', border: '1px solid #e2e8f0', borderRadius: 7, padding: '10px 14px', marginBottom: 24 }}>
                                     💡 Get your API token: Jenkins → click your username → Configure → API Token → Generate New Token
                                 </div>
