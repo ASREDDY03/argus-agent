@@ -12,8 +12,10 @@ import os
 
 app = Flask(__name__)
 
-DB_PATH = '/tmp/argus_ml.db'
-MODEL_PATH = '/tmp/argus_model.pkl'
+DATA_DIR = os.environ.get('ML_DATA_DIR', '/data')
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, 'argus_ml.db')
+MODEL_PATH = os.path.join(DATA_DIR, 'argus_model.pkl')
 
 # ── SQLite persistence ────────────────────────────────────────────────────────
 

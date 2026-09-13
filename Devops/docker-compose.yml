@@ -46,6 +46,8 @@ services:
     container_name: ml-service
     ports:
       - "8000:8000"
+    volumes:
+      - ml-data:/data
     networks:
       - devopsnet
 
@@ -115,6 +117,7 @@ services:
 
 volumes:
   grafana-data:
+  ml-data:
 
 networks:
   devopsnet:
