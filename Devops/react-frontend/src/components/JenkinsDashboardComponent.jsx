@@ -152,6 +152,27 @@ function SlaBadge({ breach }) {
     );
 }
 
+function HealthScore({ score }) {
+    if (score == null) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>;
+    const color = score >= 80 ? '#22c55e' : score >= 50 ? '#f59e0b' : '#ef4444';
+    const bg    = score >= 80 ? 'rgba(34,197,94,0.12)' : score >= 50 ? 'rgba(245,158,11,0.12)' : 'rgba(239,68,68,0.12)';
+    return (
+        <div title={`Health score: ${score}/100`} style={{
+            width: 36, height: 36, borderRadius: '50%',
+            background: `conic-gradient(${color} ${score}%, rgba(255,255,255,0.06) 0)`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        }}>
+            <div style={{
+                width: 26, height: 26, borderRadius: '50%', background: 'var(--surface)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 9, fontWeight: 800, color,
+            }}>
+                {score}
+            </div>
+        </div>
+    );
+}
+
 function RiskBadge({ riskLevel, probability }) {
     if (!riskLevel || riskLevel === 'LOW') return null;
     const cfg = {
@@ -657,6 +678,18 @@ class JenkinsDashboardComponent extends Component {
                                     <div className="stat-value">{avgDur}s</div>
                                     <div className="stat-sub">across all jobs</div>
                                 </div>
+                                {jobs.some(j => j.healthScore != null) && (() => {
+                                    const scored = jobs.filter(j => j.healthScore != null);
+                                    const fleet = Math.round(scored.reduce((a, j) => a + j.healthScore, 0) / scored.length);
+                                    const fleetColor = fleet >= 80 ? 'success' : fleet >= 50 ? 'accent' : 'failure';
+                                    return (
+                                        <div className={`stat-card ${fleetColor}`}>
+                                            <div className="stat-label">Fleet Health</div>
+                                            <div className="stat-value">{fleet}</div>
+                                            <div className="stat-sub">avg score / 100</div>
+                                        </div>
+                                    );
+                                })()}
                             </div>
 
                             <div className="table-toolbar">
@@ -676,6 +709,7 @@ class JenkinsDashboardComponent extends Component {
                                 <table className="jobs-table">
                                     <thead>
                                         <tr>
+                                            <th>Health</th>
                                             <th>Pipeline</th>
                                             <th>Status</th>
                                             <th>Duration</th>
@@ -701,6 +735,7 @@ class JenkinsDashboardComponent extends Component {
                                         )}
                                         {filtered.map(job => (
                                             <tr key={job.jobName} onClick={() => this.fetchJobDetails(job)}>
+                                                <td style={{ width: 44 }}><HealthScore score={job.healthScore} /></td>
                                                 <td>
                                                     <div className="job-name-cell">
                                                         <div className={`status-dot ${statusClass(job.status)}`} />
@@ -1008,7 +1043,10 @@ class JenkinsDashboardComponent extends Component {
                                         {/* Trend metrics */}
                                         {drawerTrends && (
                                             <div>
-                                                <div className="section-title">Health Metrics</div>
+                                                <div className="section-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                                    Health Metrics
+                                                    {jobDetails.healthScore != null && <HealthScore score={jobDetails.healthScore} />}
+                                                </div>
                                                 <div className="summary-grid">
                                                     <div className="summary-card">
                                                         <div className="summary-card-label">Success Rate</div>
