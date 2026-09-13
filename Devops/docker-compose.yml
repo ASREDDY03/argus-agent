@@ -31,6 +31,7 @@ services:
       - JENKINS_USER=${JENKINS_USER}
       - JENKINS_TOKEN=${JENKINS_TOKEN}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     depends_on:
       mysqldbs:
         condition: service_healthy

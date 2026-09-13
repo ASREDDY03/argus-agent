@@ -57,13 +57,16 @@ public class JenkinsService {
 
     private final MeterRegistry meterRegistry;
     private final SlackAlertService slackAlertService;
+    private final ClaudeInsightService claudeInsightService;
 
     // Tracks last known status per job for recovery detection
     private final Map<String, String> lastKnownStatus = new ConcurrentHashMap<>();
 
-    public JenkinsService(MeterRegistry meterRegistry, SlackAlertService slackAlertService) {
+    public JenkinsService(MeterRegistry meterRegistry, SlackAlertService slackAlertService,
+                          ClaudeInsightService claudeInsightService) {
         this.meterRegistry = meterRegistry;
         this.slackAlertService = slackAlertService;
+        this.claudeInsightService = claudeInsightService;
     }
 
     @PostConstruct
@@ -531,9 +534,10 @@ public class JenkinsService {
                 log.info("[ANOMALY] Job failed: {}", jobName);
             }
 
-            // Call LLM once if anomaly detected
+            // Call AI once if anomaly detected — fetch real build log first
             if (anomaly) {
-                insight = callGroqLLMForInsight(latest, isFailure);
+                String buildLog = fetchBuildLog(jobName);
+                insight = claudeInsightService.getInsight(jobName, latest.getDuration(), isFailure, buildLog);
                 if (isFailure) {
                     slackAlertService.sendBuildFailureAlert(jobName, latest.getDuration(), insight);
                 } else {
@@ -602,57 +606,21 @@ public class JenkinsService {
         return result;
     }
 
-    // Real Ollama LLM call for anomaly insights
-    private String callGroqLLMForInsight(JenkinsJob job, boolean isFailure) {
-        String ollamaUrl = System.getenv().getOrDefault("OLLAMA_URL", "http://host.docker.internal:11434");
-        String model = System.getenv().getOrDefault("OLLAMA_MODEL", "qwen2.5-coder:14b");
-
-        String prompt;
-        if (isFailure) {
-            prompt = "You are a DevOps expert. Jenkins job '" + job.getJobName() +
-                    "' FAILED with duration " + job.getDuration() + "ms. " +
-                    "In 2-3 sentences, give the most likely root cause and one specific fix. Be direct and actionable.";
-        } else {
-            prompt = "You are a DevOps expert. Jenkins job '" + job.getJobName() +
-                    "' shows a performance anomaly with duration " + job.getDuration() + "ms which is unusually high. " +
-                    "In 2-3 sentences, explain the most likely cause of this slowdown and what to investigate. Be direct and actionable.";
-        }
-
-        log.info("[Ollama] Sending prompt for job: ", job.getJobName());
-
+    /**
+     * Fetches the last build console log from Jenkins.
+     * Returns empty string if unavailable (Jenkins down, no builds yet, etc.).
+     */
+    private String fetchBuildLog(String jobName) {
         try {
-            RestTemplate restTemplate = new RestTemplate();
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-
-            String escapedPrompt = prompt.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
-            String requestBody = "{\"model\":\"" + model + "\",\"prompt\":\"" + escapedPrompt + "\",\"stream\":false}";
-
-            HttpEntity<String> entity = new HttpEntity<>(requestBody, headers);
+            String logUrl = jenkinsUrl + "/job/" + jobName + "/lastBuild/consoleText";
             ResponseEntity<String> response = restTemplate.exchange(
-                ollamaUrl + "/api/generate",
-                HttpMethod.POST,
-                entity,
-                String.class
+                logUrl, HttpMethod.GET, buildAuthEntity(), String.class
             );
-
-            String body = response.getBody();
-            if (body != null) {
-                int start = body.indexOf("\"response\":\"") + 12;
-                int end = body.indexOf("\",\"done\"");
-                if (start > 11 && end > start) {
-                    String insight = body.substring(start, end)
-                        .replace("\\n", " ")
-                        .replace("\\\"", "\"")
-                        .trim();
-                    log.info("[Ollama] Insight: ", insight);
-                    return insight;
-                }
-            }
-            return "Ollama returned an empty response.";
+            String log = response.getBody();
+            return ClaudeInsightService.truncateLog(log);
         } catch (Exception e) {
-            log.warn("[Ollama] Error: " + " {}", e.getMessage());
-            return "AI insight unavailable — Ollama not reachable at " + ollamaUrl;
+            log.warn("[JENKINS] Could not fetch build log for {}: {}", jobName, e.getMessage());
+            return "";
         }
     }
 } 
