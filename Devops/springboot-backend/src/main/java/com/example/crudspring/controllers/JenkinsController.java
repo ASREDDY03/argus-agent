@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.CrossOrigin;
 import com.example.crudspring.services.JenkinsService;
 import com.example.crudspring.models.JenkinsJob;
 import com.example.crudspring.models.JenkinsBuildSummary;
+import com.example.crudspring.websocket.JenkinsPoller;
 
 import java.util.List;
 import java.util.Map;
@@ -17,9 +18,11 @@ import java.util.Map;
 @CrossOrigin(originPatterns = "*")
 public class JenkinsController {
     private final JenkinsService jenkinsService;
+    private final JenkinsPoller jenkinsPoller;
 
-    public JenkinsController(JenkinsService jenkinsService) {
+    public JenkinsController(JenkinsService jenkinsService, JenkinsPoller jenkinsPoller) {
         this.jenkinsService = jenkinsService;
+        this.jenkinsPoller  = jenkinsPoller;
     }
 
     @GetMapping("/api/jobs")
@@ -63,7 +66,9 @@ public class JenkinsController {
 
     @PostMapping("/api/jenkins/poll")
     public Map<String, Object> triggerPoll() {
-        return jenkinsService.triggerPoll();
+        Map<String, Object> result = jenkinsService.triggerPoll();
+        jenkinsPoller.pushNow(); // push update to all WebSocket clients immediately
+        return result;
     }
 
     @PostMapping("/api/jenkins/config")
