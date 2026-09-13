@@ -719,17 +719,28 @@ public class JenkinsService {
     }
 
     public List<JenkinsJob> getMockJobs() {
-        List<JenkinsJob> jobs = new java.util.ArrayList<>();
-        JenkinsJob fe = new JenkinsJob("frontend-deploy", "SUCCESS", LocalDateTime.now().minusMinutes(5), 45L);
-        fe.setFlakinessScore(0.0); fe.setFlaky(false);
-        jobs.add(fe);
-        JenkinsJob be = new JenkinsJob("backend-api", "FAILURE", LocalDateTime.now().minusMinutes(12), 30L);
-        be.setFlakinessScore(0.5); be.setFlaky(true);
-        jobs.add(be);
+        JenkinsJob frontend = new JenkinsJob("frontend-deploy", "SUCCESS", LocalDateTime.now().minusMinutes(5), 45L);
+        frontend.setAnomaly(true);
+        frontend.setRiskLevel("MEDIUM");
+        frontend.setFailureProbability(0.38);
+        frontend.setFlakinessScore(0.0);
+        frontend.setFlaky(false);
+
+        JenkinsJob backend = new JenkinsJob("backend-api", "FAILURE", LocalDateTime.now().minusMinutes(12), 30L);
+        backend.setAnomaly(true);
+        backend.setRiskLevel("HIGH");
+        backend.setFailureProbability(0.81);
+        backend.setFlakinessScore(0.5);
+        backend.setFlaky(true);
+
         JenkinsJob ml = new JenkinsJob("ml-pipeline", "SUCCESS", LocalDateTime.now().minusMinutes(30), 90L);
-        ml.setFlakinessScore(0.0); ml.setFlaky(false);
-        jobs.add(ml);
-        return jobs;
+        ml.setAnomaly(false);
+        ml.setRiskLevel("LOW");
+        ml.setFailureProbability(0.07);
+        ml.setFlakinessScore(0.0);
+        ml.setFlaky(false);
+
+        return java.util.Arrays.asList(frontend, backend, ml);
     }
 
     public Map<String, Object> getMockJobInsights(String jobName) {
@@ -747,6 +758,8 @@ public class JenkinsService {
                 history.add(new JenkinsJob(jobName, "SUCCESS", LocalDateTime.now().minusMinutes(5), 45L));
                 anomaly = true;
                 insight = "Anomaly detected: Build 3 days ago took 120s vs average of ~44s. Likely cause: npm dependency cache miss or slow registry response during install step.";
+                result.put("failureProbability", 0.38);
+                result.put("riskLevel", "MEDIUM");
                 break;
             case "backend-api":
                 history.add(new JenkinsJob(jobName, "SUCCESS", LocalDateTime.now().minusDays(4), 55L));
@@ -756,6 +769,8 @@ public class JenkinsService {
                 history.add(new JenkinsJob(jobName, "FAILURE", LocalDateTime.now().minusMinutes(12), 30L));
                 anomaly = true;
                 insight = "FAILURE: 2 consecutive failures detected. Build exits early (30s vs normal 55s) suggesting startup crash. Likely cause: missing environment variable or database connection timeout on deploy. Check application logs for NullPointerException or connection refused errors.";
+                result.put("failureProbability", 0.81);
+                result.put("riskLevel", "HIGH");
                 break;
             case "ml-pipeline":
                 history.add(new JenkinsJob(jobName, "SUCCESS", LocalDateTime.now().minusDays(5), 88L));
@@ -765,9 +780,13 @@ public class JenkinsService {
                 history.add(new JenkinsJob(jobName, "SUCCESS", LocalDateTime.now().minusMinutes(30), 90L));
                 anomaly = false;
                 insight = "All builds healthy. Consistent duration ~90s across 5 builds. No anomalies detected.";
+                result.put("failureProbability", 0.07);
+                result.put("riskLevel", "LOW");
                 break;
             default:
                 insight = "No mock data available for job: " + jobName;
+                result.put("failureProbability", 0.0);
+                result.put("riskLevel", "LOW");
         }
 
         double mockFlakiness = "backend-api".equals(jobName) ? 0.5 : 0.0;
