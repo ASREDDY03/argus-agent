@@ -20,13 +20,18 @@ import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.util.UriComponentsBuilder;
 
 @Service
 public class JenkinsService {
+
+    private static final Logger log = LoggerFactory.getLogger(JenkinsService.class);
     @Value("${jenkins.url}")
     private String defaultJenkinsUrl;
 
@@ -51,9 +56,14 @@ public class JenkinsService {
     private final RestTemplate restTemplate = new RestTemplate();
 
     private final MeterRegistry meterRegistry;
+    private final SlackAlertService slackAlertService;
 
-    public JenkinsService(MeterRegistry meterRegistry) {
+    // Tracks last known status per job for recovery detection
+    private final Map<String, String> lastKnownStatus = new ConcurrentHashMap<>();
+
+    public JenkinsService(MeterRegistry meterRegistry, SlackAlertService slackAlertService) {
         this.meterRegistry = meterRegistry;
+        this.slackAlertService = slackAlertService;
     }
 
     @PostConstruct
@@ -190,7 +200,7 @@ public class JenkinsService {
                 return waitMs >= 0 ? waitMs : null;
             }
         } catch (Exception e) {
-            System.out.println("[JENKINS] Queue info unavailable: " + e.getMessage());
+            log.warn("[JENKINS] Queue info unavailable: " + " {}", e.getMessage());
         }
         return null;
     }
@@ -241,7 +251,7 @@ public class JenkinsService {
 
     public void pollJenkinsJob() {
         try {
-            System.out.println("[BACKEND] Polling Jenkins job at: " + jenkinsUrl);
+            log.info("[BACKEND] Polling Jenkins job at: ", jenkinsUrl);
             // Call Jenkins API for last build info with Basic Auth
             String apiUrl = jenkinsUrl + "/job/" + jobName + "/lastBuild/api/json";
             HttpHeaders headers = new HttpHeaders();
@@ -251,7 +261,7 @@ public class JenkinsService {
             headers.set("Authorization", authHeader);
             HttpEntity<String> entity = new HttpEntity<>(headers);
             
-            System.out.println("[BACKEND] Making request to: " + apiUrl);
+            log.info("[BACKEND] Making request to: ", apiUrl);
             ResponseEntity<Map> response = restTemplate.exchange(apiUrl, HttpMethod.GET, entity, Map.class);
             @SuppressWarnings("unchecked")
             Map<String, Object> buildInfo = (Map<String, Object>) response.getBody();
@@ -273,87 +283,69 @@ public class JenkinsService {
                 HttpEntity<Map<String, Object>> mlEntity = new HttpEntity<>(request, mlHeaders);
                 boolean anomalyDetected = false;
                 try {
-                    System.out.println("[BACKEND] Calling ML service at: " + mlServiceUrl);
+                    log.info("[BACKEND] Calling ML service at: ", mlServiceUrl);
                     ResponseEntity<Map> mlResponse = restTemplate.postForEntity(mlServiceUrl, mlEntity, Map.class);
                     @SuppressWarnings("unchecked")
                     Map<String, Object> mlBody = (Map<String, Object>) mlResponse.getBody();
                     Object anomalies = mlBody.get("anomalies");
-                    System.out.println("[BACKEND] ML service response: " + anomalies);
+                    log.info("[BACKEND] ML service response: ", anomalies);
                     if (anomalies instanceof List && !((List<?>) anomalies).isEmpty()) {
                         anomalyDetected = true;
-                        System.out.println("[BACKEND] Anomaly detected by ML service!");
+                        log.info("[BACKEND] Anomaly detected by ML service!");
                     }
                 } catch (Exception e) {
-                    System.out.println("[BACKEND] ML service call failed: " + e.getMessage());
+                    log.warn("[BACKEND] ML service call failed: " + " {}", e.getMessage());
                 }
 
                 recordJobMetrics(jobName, status, duration, anomalyDetected);
             }
         } catch (Exception e) {
-            System.out.println("[BACKEND] Jenkins API call failed: " + e.getMessage());
+            log.warn("[BACKEND] Jenkins API call failed: " + " {}", e.getMessage());
         }
     }
 
     public List<JenkinsJob> getAllJobs() {
         try {
-            System.out.println("[JENKINS] Fetching jobs from: " + jenkinsUrl);
-            System.out.println("[JENKINS] Using user: " + jenkinsUser);
-            System.out.println("[JENKINS] Token length: " + (jenkinsToken != null ? jenkinsToken.length() : 0));
-            
-            // Fetch jobs from Jenkins API
+            log.info("[JENKINS] Fetching jobs from: {}", jenkinsUrl);
+
+            HttpEntity<String> entity = buildAuthEntity();
             String apiUrl = jenkinsUrl + "/api/json?tree=jobs[name,color]";
-            HttpHeaders headers = new HttpHeaders();
-            String auth = jenkinsUser + ":" + jenkinsToken;
-            byte[] encodedAuth = Base64.getEncoder().encode(auth.getBytes(StandardCharsets.UTF_8));
-            String authHeader = "Basic " + new String(encodedAuth);
-            headers.set("Authorization", authHeader);
-            HttpEntity<String> entity = new HttpEntity<>(headers);
-            
-            System.out.println("[JENKINS] Making request to: " + apiUrl);
             ResponseEntity<Map> response = restTemplate.exchange(apiUrl, HttpMethod.GET, entity, Map.class);
-            System.out.println("[JENKINS] Response status: " + response.getStatusCode());
-            
+
             @SuppressWarnings("unchecked")
             Map<String, Object> body = (Map<String, Object>) response.getBody();
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> jobs = (List<Map<String, Object>>) body.get("jobs");
-            
-            System.out.println("[JENKINS] Found " + (jobs != null ? jobs.size() : 0) + " jobs");
-            
+
+            log.info("[JENKINS] Found {} jobs", jobs != null ? jobs.size() : 0);
+
             List<JenkinsJob> result = new java.util.ArrayList<>();
             if (jobs != null) {
                 for (Map<String, Object> job : jobs) {
                     String name = (String) job.get("name");
-                    System.out.println("[JENKINS] Processing job: " + name);
-                    
                     try {
-                        // Fetch last build for each job
                         String buildUrl = jenkinsUrl + "/job/" + name + "/lastBuild/api/json";
-                        System.out.println("[JENKINS] Fetching build info from: " + buildUrl);
                         ResponseEntity<Map> buildResp = restTemplate.exchange(buildUrl, HttpMethod.GET, entity, Map.class);
                         @SuppressWarnings("unchecked")
                         Map<String, Object> buildInfo = (Map<String, Object>) buildResp.getBody();
                         if (buildInfo != null) {
                             String status = (String) buildInfo.get("result");
-                            Long duration = ((Number) buildInfo.get("duration")).longValue() / 1000; // ms to s
-                            duration = duration * 3; // Simulate longer duration
+                            Long duration = ((Number) buildInfo.get("duration")).longValue() / 1000;
                             Long timestampMs = ((Number) buildInfo.get("timestamp")).longValue();
                             LocalDateTime timestamp = LocalDateTime.ofInstant(Instant.ofEpochMilli(timestampMs), ZoneId.systemDefault());
                             result.add(new JenkinsJob(name, status, timestamp, duration));
-                            System.out.println("[JENKINS] Added job: " + name + " with status: " + status);
+                            log.info("[JENKINS] Added job: {} status={}", name, status);
                         }
                     } catch (Exception buildEx) {
-                        System.out.println("[JENKINS] Failed to fetch build info for job " + name + ": " + buildEx.getMessage());
-                        // Add job with default values if build info fails
+                        log.warn("[JENKINS] Failed to fetch build info for job {}: {}", name, buildEx.getMessage());
                         result.add(new JenkinsJob(name, "UNKNOWN", LocalDateTime.now(), 0L));
                     }
                 }
             }
-            System.out.println("[JENKINS] Returning " + result.size() + " jobs");
+            log.info("[JENKINS] Returning {} jobs", result.size());
             return result;
         } catch (Exception e) {
-            System.out.println("[JENKINS] Jenkins API call failed: " + e.getMessage());
-            e.printStackTrace();
+            log.warn("[JENKINS] Jenkins API call failed: {}", e.getMessage());
             return java.util.Collections.emptyList();
         }
     }
@@ -434,8 +426,8 @@ public class JenkinsService {
             headers.set("Authorization", authHeader);
             HttpEntity<String> entity = new HttpEntity<>(headers);
             
-            System.out.println("[DEBUG] Testing connection to: " + apiUrl);
-            System.out.println("[DEBUG] Auth header: " + authHeader.substring(0, 20) + "...");
+            log.info("[DEBUG] Testing connection to: ", apiUrl);
+            log.info("[DEBUG] Auth header: ", authHeader.substring(0, 20) + "...");
             
             ResponseEntity<Map> response = restTemplate.exchange(apiUrl, HttpMethod.GET, entity, Map.class);
             result.put("connectionStatus", "SUCCESS");
@@ -484,58 +476,77 @@ public class JenkinsService {
                 }
             }
             java.util.Collections.reverse(history); // oldest first, newest last
-            System.out.println("[JENKINS] Fetched " + history.size() + " builds for job: " + jobName);
+            log.info("[JENKINS] Fetched ", history.size() + " builds for job: " + jobName);
         } catch (Exception e) {
-            System.out.println("[JENKINS] Failed to fetch build history for " + jobName + ": " + e.getMessage());
+            log.info("[JENKINS] Failed to fetch build history for ", jobName + ": " + e.getMessage());
         }
         return history;
     }
 
     public Map<String, Object> getJobInsights(String jobName) {
-        System.out.println("[JENKINS] Fetching job insights for: " + jobName);
+        log.info("[JENKINS] Fetching job insights for: {}", jobName);
         List<JenkinsJob> jobs = getJobBuildHistory(jobName);
-        System.out.println("[JENKINS] Job history: " + jobs);
         Map<String, Object> result = new HashMap<>();
         result.put("history", jobs);
         boolean anomaly = false;
+        boolean isFailure = false;
         String insight = "Normal";
+
         if (!jobs.isEmpty()) {
             JenkinsJob latest = jobs.get(jobs.size() - 1);
-            System.out.println("[JENKINS] Latest job: " + latest);
-            // Always call ML service for every job
+            String currentStatus = latest.getStatus();
+            String previousStatus = lastKnownStatus.get(jobName);
+
+            // Check for recovery: was failing, now success
+            if ("SUCCESS".equalsIgnoreCase(currentStatus) && "FAILURE".equalsIgnoreCase(previousStatus)) {
+                slackAlertService.sendRecoveryAlert(jobName, latest.getDuration());
+            }
+
+            // ML anomaly detection
             try {
                 Map<String, Object> request = new HashMap<>();
                 request.put("durations", jobs.stream().map(JenkinsJob::getDuration).collect(Collectors.toList()));
                 request.put("statuses", jobs.stream().map(JenkinsJob::getStatus).collect(Collectors.toList()));
-                request.put("latest_status", latest.getStatus());
+                request.put("latest_status", currentStatus);
                 request.put("latest_duration", latest.getDuration());
                 HttpHeaders mlHeaders = new HttpHeaders();
                 mlHeaders.setContentType(MediaType.APPLICATION_JSON);
                 HttpEntity<Map<String, Object>> mlEntity = new HttpEntity<>(request, mlHeaders);
-                System.out.println("[ML] Sending to ML service: " + request);
                 ResponseEntity<Map> mlResponse = restTemplate.postForEntity(mlServiceUrl, mlEntity, Map.class);
                 @SuppressWarnings("unchecked")
                 Map<String, Object> mlBody = (Map<String, Object>) mlResponse.getBody();
                 Object anomalies = mlBody.get("anomalies");
-                System.out.println("[ML] ML service response: " + anomalies);
                 if (anomalies instanceof List && !((List<?>) anomalies).isEmpty()) {
                     anomaly = true;
-                    System.out.println("[ANOMALY] ML detected anomaly in job.");
-                    insight = callGroqLLMForInsight(latest, true);
+                    log.info("[ANOMALY] ML detected anomaly in job: {}", jobName);
                 }
             } catch (Exception e) {
-                System.out.println("ML service call failed: " + e.getMessage());
+                log.warn("ML service call failed: {}", e.getMessage());
             }
-            // If job failed (intentional or real), always mark as anomaly
-            if ("FAILURE".equalsIgnoreCase(latest.getStatus())) {
+
+            // Failure always counts as anomaly
+            if ("FAILURE".equalsIgnoreCase(currentStatus)) {
                 anomaly = true;
-                System.out.println("[ANOMALY] Job failed. Marked as anomaly.");
-                insight = callGroqLLMForInsight(latest, true);
+                isFailure = true;
+                log.info("[ANOMALY] Job failed: {}", jobName);
             }
+
+            // Call LLM once if anomaly detected
+            if (anomaly) {
+                insight = callGroqLLMForInsight(latest, isFailure);
+                if (isFailure) {
+                    slackAlertService.sendBuildFailureAlert(jobName, latest.getDuration(), insight);
+                } else {
+                    slackAlertService.sendAnomalyAlert(jobName, latest.getDuration(), insight);
+                }
+            }
+
+            lastKnownStatus.put(jobName, currentStatus);
         }
+
         result.put("anomaly", anomaly);
         result.put("insight", insight);
-        System.out.println("[RESULT] Anomaly: " + anomaly + ", Insight: " + insight);
+        log.info("[RESULT] job={} anomaly={}", jobName, anomaly);
         return result;
     }
 
@@ -607,7 +618,7 @@ public class JenkinsService {
                     "In 2-3 sentences, explain the most likely cause of this slowdown and what to investigate. Be direct and actionable.";
         }
 
-        System.out.println("[Ollama] Sending prompt for job: " + job.getJobName());
+        log.info("[Ollama] Sending prompt for job: ", job.getJobName());
 
         try {
             RestTemplate restTemplate = new RestTemplate();
@@ -634,13 +645,13 @@ public class JenkinsService {
                         .replace("\\n", " ")
                         .replace("\\\"", "\"")
                         .trim();
-                    System.out.println("[Ollama] Insight: " + insight);
+                    log.info("[Ollama] Insight: ", insight);
                     return insight;
                 }
             }
             return "Ollama returned an empty response.";
         } catch (Exception e) {
-            System.out.println("[Ollama] Error: " + e.getMessage());
+            log.warn("[Ollama] Error: " + " {}", e.getMessage());
             return "AI insight unavailable — Ollama not reachable at " + ollamaUrl;
         }
     }
