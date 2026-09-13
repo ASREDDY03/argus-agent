@@ -582,9 +582,41 @@ public class JenkinsService {
             lastKnownStatus.put(jobName, currentStatus);
         }
 
+        // Failure prediction — requires ≥5 builds in history
+        double failureProbability = 0.0;
+        String riskLevel = "LOW";
+        if (jobs.size() >= 5) {
+            try {
+                String predictUrl = mlServiceUrl.replace("/analyze", "/predict-failure");
+                List<Map<String, Object>> historyPayload = jobs.stream().map(j -> {
+                    Map<String, Object> entry = new HashMap<>();
+                    entry.put("duration", j.getDuration());
+                    entry.put("status", "SUCCESS".equalsIgnoreCase(j.getStatus()) ? 1 : 0);
+                    return entry;
+                }).collect(Collectors.toList());
+                Map<String, Object> predictRequest = new HashMap<>();
+                predictRequest.put("history", historyPayload);
+                HttpHeaders mlHeaders = new HttpHeaders();
+                mlHeaders.setContentType(MediaType.APPLICATION_JSON);
+                ResponseEntity<Map> predictResponse = restTemplate.postForEntity(
+                    predictUrl, new HttpEntity<>(predictRequest, mlHeaders), Map.class);
+                Map<String, Object> predictBody = (Map<String, Object>) predictResponse.getBody();
+                if (predictBody != null && predictBody.get("prob_failure") instanceof Number) {
+                    failureProbability = ((Number) predictBody.get("prob_failure")).doubleValue();
+                    if (failureProbability >= 0.6) riskLevel = "HIGH";
+                    else if (failureProbability >= 0.3) riskLevel = "MEDIUM";
+                    log.info("[PREDICT] job={} prob_failure={} risk={}", jobName, failureProbability, riskLevel);
+                }
+            } catch (Exception e) {
+                log.warn("[PREDICT] Failure prediction unavailable for {}: {}", jobName, e.getMessage());
+            }
+        }
+
         result.put("anomaly", anomaly);
         result.put("insight", insight);
-        log.info("[RESULT] job={} anomaly={}", jobName, anomaly);
+        result.put("failureProbability", failureProbability);
+        result.put("riskLevel", riskLevel);
+        log.info("[RESULT] job={} anomaly={} risk={}", jobName, anomaly, riskLevel);
         return result;
     }
 
