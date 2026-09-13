@@ -413,6 +413,23 @@ public class JenkinsService {
     }
 
     /**
+     * Builds a CSV string of the persisted build history for a given job.
+     * Pulls straight from the DB so it works even when Jenkins is unreachable.
+     */
+    public String exportBuildHistoryCsv(String jobName) {
+        List<BuildRecord> records = buildRecordRepository.findByJobNameOrderByTimestampAsc(jobName);
+        StringBuilder sb = new StringBuilder();
+        sb.append("build_number,status,duration_seconds,timestamp\n");
+        for (BuildRecord r : records) {
+            sb.append(r.getBuildNumber()).append(',')
+              .append(r.getStatus()).append(',')
+              .append(r.getDurationSeconds()).append(',')
+              .append(r.getTimestamp()).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /**
      * Called by the background monitor. Runs getJobInsights() for every known job
      * and caches the result so it's baked into the next WebSocket broadcast.
      */
