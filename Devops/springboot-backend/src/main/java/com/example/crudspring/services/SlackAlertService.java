@@ -39,6 +39,15 @@ public class SlackAlertService {
         post(webhookUrl, buildPayload("#FF9900", text));
     }
 
+    public void sendSlaBreachAlert(String webhookUrl, String jobName, long durationSeconds, long slaSeconds) {
+        if (!isConfigured(webhookUrl)) return;
+        String text = String.format(
+            ":stopwatch: *SLA Breach — %s*\nBuild took %ds — exceeded threshold of %ds.",
+            jobName, durationSeconds, slaSeconds
+        );
+        post(webhookUrl, buildPayload("#9333ea", text));
+    }
+
     public void sendRecoveryAlert(String webhookUrl, String jobName, long durationSeconds) {
         if (!isConfigured(webhookUrl)) return;
         String text = String.format(
