@@ -22,6 +22,110 @@ function formatTs(ts) {
     return d.toLocaleDateString();
 }
 
+function computeTrends(history) {
+    if (!history || history.length === 0) return null;
+    const total = history.length;
+    const successes = history.filter(h => h.status === 'SUCCESS').length;
+    const successRate = Math.round((successes / total) * 100);
+    const avgDuration = Math.round(
+        history.reduce((a, h) => a + (h.duration || 0), 0) / total
+    );
+
+    // MTTR — time from first failure to next success
+    let totalRecoveryMin = 0, recoveries = 0, failStart = null;
+    for (const build of history) {
+        if (build.status === 'FAILURE' && failStart === null) {
+            failStart = new Date(build.timestamp);
+        } else if (build.status === 'SUCCESS' && failStart !== null) {
+            const diffMin = Math.round((new Date(build.timestamp) - failStart) / 60000);
+            if (diffMin > 0) { totalRecoveryMin += diffMin; recoveries++; }
+            failStart = null;
+        }
+    }
+    const mttr = recoveries > 0 ? Math.round(totalRecoveryMin / recoveries) : null;
+
+    // Trend: compare last 5 vs previous 5 success rates
+    let trend = 'stable';
+    if (history.length >= 10) {
+        const recent = history.slice(-5).filter(h => h.status === 'SUCCESS').length;
+        const older  = history.slice(-10, -5).filter(h => h.status === 'SUCCESS').length;
+        if (recent > older) trend = 'improving';
+        else if (recent < older) trend = 'degrading';
+    }
+
+    return { successRate, avgDuration, mttr, trend, total };
+}
+
+// ── Mini chart components ──────────────────────────────────────────────────────
+
+function Sparkline({ values, width = 120, height = 32, color = '#4361ee' }) {
+    if (!values || values.length < 2) return <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>;
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+    const pts = values.map((v, i) => {
+        const x = (i / (values.length - 1)) * width;
+        const y = height - ((v - min) / range) * (height - 6) - 3;
+        return `${x},${y}`;
+    }).join(' ');
+    return (
+        <svg width={width} height={height} style={{ display: 'block', overflow: 'visible' }}>
+            <polyline
+                points={pts}
+                fill="none"
+                stroke={color}
+                strokeWidth="1.8"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+            />
+            {/* last point dot */}
+            {values.length > 0 && (() => {
+                const lx = width;
+                const ly = height - ((values[values.length - 1] - min) / range) * (height - 6) - 3;
+                return <circle cx={lx} cy={ly} r="2.5" fill={color} />;
+            })()}
+        </svg>
+    );
+}
+
+function StatusDots({ history, count = 12 }) {
+    if (!history || history.length === 0) return <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>;
+    const recent = history.slice(-count);
+    return (
+        <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+            {recent.map((h, i) => (
+                <div
+                    key={i}
+                    title={`${h.status} — ${h.duration}s`}
+                    style={{
+                        width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                        background: h.status === 'SUCCESS' ? '#22c55e'
+                            : h.status === 'FAILURE' ? '#ef4444'
+                            : '#475569',
+                    }}
+                />
+            ))}
+        </div>
+    );
+}
+
+function TrendBadge({ trend }) {
+    const cfg = {
+        improving: { label: '↑ Improving', color: '#22c55e', bg: 'rgba(34,197,94,0.1)' },
+        degrading:  { label: '↓ Degrading', color: '#ef4444', bg: 'rgba(239,68,68,0.1)'  },
+        stable:     { label: '→ Stable',    color: '#94a3b8', bg: 'rgba(148,163,184,0.1)' },
+    };
+    const c = cfg[trend] || cfg.stable;
+    return (
+        <span style={{
+            fontSize: 11, fontWeight: 600, padding: '2px 7px', borderRadius: 4,
+            color: c.color, background: c.bg,
+        }}>
+            {c.label}
+        </span>
+    );
+}
+
 function DurationBar({ value, max }) {
     const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
     return (
@@ -68,6 +172,8 @@ class JenkinsDashboardComponent extends Component {
             search: '',
             triggeringJob: null,
             triggerMsg: null,
+            trendsData: {},       // jobName → { history, trends }
+            loadingTrends: false,
             jenkinsConfig: {
                 url: 'http://localhost:8080',
                 user: '',
@@ -83,6 +189,7 @@ class JenkinsDashboardComponent extends Component {
         this.toggleDemoMode      = this.toggleDemoMode.bind(this);
         this.closeDrawer         = this.closeDrawer.bind(this);
         this.triggerBuild        = this.triggerBuild.bind(this);
+        this.loadTrendsTab       = this.loadTrendsTab.bind(this);
     }
 
     componentDidMount() {
@@ -126,6 +233,33 @@ class JenkinsDashboardComponent extends Component {
         }
     }
 
+    loadTrendsTab() {
+        const { jobs, demoMode, trendsData } = this.state;
+        // Only fetch jobs we don't have trend data for yet
+        const missing = jobs.filter(j => !trendsData[j.jobName]);
+        if (missing.length === 0) return;
+
+        this.setState({ loadingTrends: true });
+        const calls = missing.map(j =>
+            (demoMode ? JenkinsService.getMockJobDetails(j.jobName) : JenkinsService.getJobDetails(j.jobName))
+                .then(res => ({ jobName: j.jobName, data: res.data }))
+                .catch(() => ({ jobName: j.jobName, data: null }))
+        );
+
+        Promise.all(calls).then(results => {
+            const newTrends = { ...this.state.trendsData };
+            results.forEach(({ jobName, data }) => {
+                if (data) {
+                    newTrends[jobName] = {
+                        history: data.history || [],
+                        trends: computeTrends(data.history || []),
+                    };
+                }
+            });
+            this.setState({ trendsData: newTrends, loadingTrends: false });
+        });
+    }
+
     closeDrawer() {
         this.setState({ showDetails: false, selectedJob: null, jobDetails: null, jobSummary: null });
     }
@@ -149,7 +283,7 @@ class JenkinsDashboardComponent extends Component {
 
     toggleDemoMode() {
         const entering = !this.state.demoMode;
-        this.setState({ demoMode: entering, jobs: [], error: null, showDetails: false }, () => {
+        this.setState({ demoMode: entering, jobs: [], error: null, showDetails: false, trendsData: {} }, () => {
             if (entering) {
                 this.setState({ loading: true });
                 JenkinsService.getMockJobs()
@@ -192,16 +326,18 @@ class JenkinsDashboardComponent extends Component {
     render() {
         const { jobs, loading, error, jobDetails, jobSummary, selectedJob, showDetails,
                 showConfig, demoMode, activeTab, search, jenkinsConfig,
-                triggeringJob, triggerMsg } = this.state;
+                triggeringJob, triggerMsg, trendsData, loadingTrends } = this.state;
 
         const filtered = jobs.filter(j =>
             !search || j.jobName.toLowerCase().includes(search.toLowerCase())
         );
-        const maxDur = Math.max(...jobs.map(j => j.duration || 0), 1);
+        const maxDur  = Math.max(...jobs.map(j => j.duration || 0), 1);
         const total   = jobs.length;
         const success = jobs.filter(j => j.status === 'SUCCESS').length;
         const failed  = jobs.filter(j => j.status === 'FAILURE').length;
         const avgDur  = jobs.length ? Math.round(jobs.reduce((a, j) => a + (j.duration || 0), 0) / jobs.length) : 0;
+
+        const drawerTrends = jobDetails ? computeTrends(jobDetails.history || []) : null;
 
         return (
             <div className="argus-root">
@@ -271,6 +407,12 @@ class JenkinsDashboardComponent extends Component {
                         <span className="tab-count">{total}</span>
                     </button>
                     <button
+                        className={`argus-tab${activeTab === 'trends' ? ' active' : ''}`}
+                        onClick={() => { this.setState({ activeTab: 'trends' }); this.loadTrendsTab(); }}
+                    >
+                        ↗ Trends
+                    </button>
+                    <button
                         className={`argus-tab${activeTab === 'grafana' ? ' active' : ''}`}
                         onClick={() => this.setState({ activeTab: 'grafana' })}
                     >
@@ -311,7 +453,6 @@ class JenkinsDashboardComponent extends Component {
                     {/* ── Jobs tab ── */}
                     {activeTab === 'jobs' && (
                         <>
-                            {/* Stats row */}
                             <div className="stats-row">
                                 <div className="stat-card">
                                     <div className="stat-label">Total Pipelines</div>
@@ -335,7 +476,6 @@ class JenkinsDashboardComponent extends Component {
                                 </div>
                             </div>
 
-                            {/* Toolbar */}
                             <div className="table-toolbar">
                                 <input
                                     className="search-input"
@@ -349,7 +489,6 @@ class JenkinsDashboardComponent extends Component {
                                 </button>
                             </div>
 
-                            {/* Table */}
                             <div className="jobs-table-wrap">
                                 <table className="jobs-table">
                                     <thead>
@@ -371,9 +510,7 @@ class JenkinsDashboardComponent extends Component {
                                                         <div className="empty-icon">⬡</div>
                                                         <div className="empty-title">No pipelines found</div>
                                                         <div className="empty-sub">
-                                                            {search
-                                                                ? 'No jobs match your search.'
-                                                                : 'Click Refresh or configure your Jenkins connection.'}
+                                                            {search ? 'No jobs match your search.' : 'Click Refresh or configure your Jenkins connection.'}
                                                         </div>
                                                     </div>
                                                 </td>
@@ -393,37 +530,23 @@ class JenkinsDashboardComponent extends Component {
                                                         {' '}{job.status || 'UNKNOWN'}
                                                     </span>
                                                 </td>
+                                                <td><DurationBar value={job.duration || 0} max={maxDur} /></td>
+                                                <td><span className="ts-text">{formatTs(job.timestamp)}</span></td>
                                                 <td>
-                                                    <DurationBar value={job.duration || 0} max={maxDur} />
-                                                </td>
-                                                <td>
-                                                    <span className="ts-text">{formatTs(job.timestamp)}</span>
-                                                </td>
-                                                <td>
-                                                    {job.anomaly && (
-                                                        <span className="anomaly-badge">⚠ Anomaly</span>
-                                                    )}
+                                                    {job.anomaly && <span className="anomaly-badge">⚠ Anomaly</span>}
                                                 </td>
                                                 <td>
                                                     <div style={{ display: 'flex', gap: 6 }}>
                                                         <button
                                                             className="btn btn-ghost btn-sm"
                                                             onClick={e => { e.stopPropagation(); this.fetchJobDetails(job); }}
-                                                            title="View build insights and history"
-                                                        >
-                                                            View →
-                                                        </button>
+                                                        >View →</button>
                                                         {!demoMode && (
                                                             <button
                                                                 className="btn btn-sm"
-                                                                style={{
-                                                                    background: 'rgba(34,197,94,0.1)',
-                                                                    color: 'var(--success)',
-                                                                    border: '1px solid rgba(34,197,94,0.25)',
-                                                                }}
+                                                                style={{ background: 'rgba(34,197,94,0.1)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.25)' }}
                                                                 onClick={e => this.triggerBuild(e, job.jobName)}
                                                                 disabled={triggeringJob === job.jobName}
-                                                                title="Trigger a new Jenkins build"
                                                             >
                                                                 {triggeringJob === job.jobName ? '…' : '▶ Run'}
                                                             </button>
@@ -438,50 +561,123 @@ class JenkinsDashboardComponent extends Component {
                         </>
                     )}
 
+                    {/* ── Trends tab ── */}
+                    {activeTab === 'trends' && (
+                        <div>
+                            <div style={{ marginBottom: 20 }}>
+                                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>
+                                    Pipeline Health Trends
+                                </div>
+                                <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                                    Success rate, duration sparklines, and MTTR across all monitored jobs.
+                                    {loadingTrends && <span style={{ marginLeft: 8, opacity: 0.6 }}>Loading…</span>}
+                                </div>
+                            </div>
+
+                            {jobs.length === 0 ? (
+                                <div className="empty-state">
+                                    <div className="empty-icon">↗</div>
+                                    <div className="empty-title">No pipelines loaded</div>
+                                    <div className="empty-sub">Go to Pipelines tab and refresh first.</div>
+                                </div>
+                            ) : (
+                                <div className="jobs-table-wrap">
+                                    <table className="jobs-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Pipeline</th>
+                                                <th>Success Rate</th>
+                                                <th>Duration Trend</th>
+                                                <th>Last 12 Builds</th>
+                                                <th>Avg Duration</th>
+                                                <th>MTTR</th>
+                                                <th>Trend</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {jobs.map(job => {
+                                                const td = trendsData[job.jobName];
+                                                const t = td?.trends;
+                                                const history = td?.history || [];
+                                                const durations = history.map(h => h.duration || 0);
+                                                return (
+                                                    <tr key={job.jobName} onClick={() => this.fetchJobDetails(job)} style={{ cursor: 'pointer' }}>
+                                                        <td>
+                                                            <div className="job-name-cell">
+                                                                <div className={`status-dot ${statusClass(job.status)}`} />
+                                                                <span className="job-name">{job.jobName}</span>
+                                                            </div>
+                                                        </td>
+                                                        <td>
+                                                            {t ? (
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                                    <div style={{
+                                                                        width: 44, height: 44, borderRadius: '50%',
+                                                                        background: `conic-gradient(${t.successRate >= 80 ? '#22c55e' : t.successRate >= 50 ? '#f59e0b' : '#ef4444'} ${t.successRate}%, rgba(255,255,255,0.08) 0)`,
+                                                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                                    }}>
+                                                                        <div style={{
+                                                                            width: 32, height: 32, borderRadius: '50%',
+                                                                            background: 'var(--surface)',
+                                                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                                            fontSize: 10, fontWeight: 700,
+                                                                            color: t.successRate >= 80 ? '#22c55e' : t.successRate >= 50 ? '#f59e0b' : '#ef4444',
+                                                                        }}>
+                                                                            {t.successRate}%
+                                                                        </div>
+                                                                    </div>
+                                                                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                                                        {history.filter(h => h.status === 'SUCCESS').length}/{t.total} builds
+                                                                    </span>
+                                                                </div>
+                                                            ) : (
+                                                                <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                                                                    {loadingTrends ? 'Loading…' : 'Click to load'}
+                                                                </span>
+                                                            )}
+                                                        </td>
+                                                        <td>
+                                                            <Sparkline
+                                                                values={durations}
+                                                                color={t?.trend === 'degrading' ? '#ef4444' : t?.trend === 'improving' ? '#22c55e' : '#4361ee'}
+                                                            />
+                                                        </td>
+                                                        <td><StatusDots history={history} /></td>
+                                                        <td style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                                                            {t ? `${t.avgDuration}s` : '—'}
+                                                        </td>
+                                                        <td style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                                                            {t?.mttr != null ? `${t.mttr}m` : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                                                        </td>
+                                                        <td>
+                                                            {t ? <TrendBadge trend={t.trend} /> : '—'}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {/* ── Monitoring tab ── */}
                     {activeTab === 'grafana' && (
                         <div className="grafana-wrap">
                             <div className="grafana-panel">
                                 <div className="grafana-panel-header">
-                                    <div className="grafana-panel-title">
-                                        ▦ Jenkins Pipelines
-                                    </div>
-                                    <a
-                                        href="http://localhost:3001/d/jenkins-pipelines"
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="btn btn-ghost btn-sm"
-                                        onClick={e => e.stopPropagation()}
-                                    >
-                                        Open ↗
-                                    </a>
+                                    <div className="grafana-panel-title">▦ Jenkins Pipelines</div>
+                                    <a href="http://localhost:3001/d/jenkins-pipelines" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">Open ↗</a>
                                 </div>
-                                <iframe
-                                    src="http://localhost:3001/d/jenkins-pipelines/argus-agent-jenkins-pipelines?orgId=1&refresh=30s&kiosk"
-                                    height="560"
-                                    title="Jenkins Pipelines"
-                                />
+                                <iframe src="http://localhost:3001/d/jenkins-pipelines/argus-agent-jenkins-pipelines?orgId=1&refresh=30s&kiosk" height="560" title="Jenkins Pipelines" />
                             </div>
                             <div className="grafana-panel">
                                 <div className="grafana-panel-header">
-                                    <div className="grafana-panel-title">
-                                        ▦ Argus Overview
-                                    </div>
-                                    <a
-                                        href="http://localhost:3001/d/argus-overview"
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="btn btn-ghost btn-sm"
-                                        onClick={e => e.stopPropagation()}
-                                    >
-                                        Open ↗
-                                    </a>
+                                    <div className="grafana-panel-title">▦ Argus Overview</div>
+                                    <a href="http://localhost:3001/d/argus-overview" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">Open ↗</a>
                                 </div>
-                                <iframe
-                                    src="http://localhost:3001/d/argus-overview/argus-agent-overview?orgId=1&refresh=30s&kiosk"
-                                    height="460"
-                                    title="Argus Overview"
-                                />
+                                <iframe src="http://localhost:3001/d/argus-overview/argus-agent-overview?orgId=1&refresh=30s&kiosk" height="460" title="Argus Overview" />
                             </div>
                         </div>
                     )}
@@ -495,17 +691,13 @@ class JenkinsDashboardComponent extends Component {
                             <div className="drawer-header">
                                 <div>
                                     <div className="drawer-title">{selectedJob?.jobName}</div>
-                                    <div className="drawer-subtitle">Build insights · AI analysis</div>
+                                    <div className="drawer-subtitle">Build insights · AI analysis · Trends</div>
                                 </div>
                                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                                     {!demoMode && selectedJob && (
                                         <button
                                             className="btn btn-sm"
-                                            style={{
-                                                background: 'rgba(34,197,94,0.1)',
-                                                color: 'var(--success)',
-                                                border: '1px solid rgba(34,197,94,0.25)',
-                                            }}
+                                            style={{ background: 'rgba(34,197,94,0.1)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.25)' }}
                                             onClick={e => this.triggerBuild(e, selectedJob.jobName)}
                                             disabled={triggeringJob === selectedJob?.jobName}
                                         >
@@ -526,9 +718,7 @@ class JenkinsDashboardComponent extends Component {
                                     <>
                                         {/* AI Insight */}
                                         <div className="insight-box">
-                                            <div className="insight-header">
-                                                ✦ AI Insight
-                                            </div>
+                                            <div className="insight-header">✦ AI Insight</div>
                                             <div className="insight-text">
                                                 {jobDetails.insight || 'No insight available for this build.'}
                                             </div>
@@ -541,6 +731,57 @@ class JenkinsDashboardComponent extends Component {
                                                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                                                     build duration or status is outside normal range
                                                 </span>
+                                            </div>
+                                        )}
+
+                                        {/* Trend metrics */}
+                                        {drawerTrends && (
+                                            <div>
+                                                <div className="section-title">Health Metrics</div>
+                                                <div className="summary-grid">
+                                                    <div className="summary-card">
+                                                        <div className="summary-card-label">Success Rate</div>
+                                                        <div className="summary-card-value" style={{
+                                                            color: drawerTrends.successRate >= 80 ? 'var(--success)' : drawerTrends.successRate >= 50 ? '#f59e0b' : 'var(--failure)'
+                                                        }}>
+                                                            {drawerTrends.successRate}%
+                                                        </div>
+                                                    </div>
+                                                    <div className="summary-card">
+                                                        <div className="summary-card-label">Avg Duration</div>
+                                                        <div className="summary-card-value">{drawerTrends.avgDuration}s</div>
+                                                    </div>
+                                                    <div className="summary-card">
+                                                        <div className="summary-card-label">MTTR</div>
+                                                        <div className="summary-card-value">
+                                                            {drawerTrends.mttr != null ? `${drawerTrends.mttr}m` : '—'}
+                                                        </div>
+                                                    </div>
+                                                    <div className="summary-card">
+                                                        <div className="summary-card-label">Trend</div>
+                                                        <div className="summary-card-value" style={{ paddingTop: 2 }}>
+                                                            <TrendBadge trend={drawerTrends.trend} />
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                {/* Duration sparkline */}
+                                                {jobDetails.history && jobDetails.history.length > 1 && (
+                                                    <div style={{ marginTop: 16 }}>
+                                                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                                                            Duration over last {jobDetails.history.length} builds
+                                                        </div>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                            <Sparkline
+                                                                values={jobDetails.history.map(h => h.duration || 0)}
+                                                                width={200}
+                                                                height={40}
+                                                                color={drawerTrends.trend === 'degrading' ? '#ef4444' : '#4361ee'}
+                                                            />
+                                                            <StatusDots history={jobDetails.history} count={15} />
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
 
@@ -622,113 +863,44 @@ class JenkinsDashboardComponent extends Component {
                 {showConfig && (
                     <div
                         onClick={() => this.setState({ showConfig: false })}
-                        style={{
-                            position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.50)',
-                            zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        }}
+                        style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.50)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                     >
                         <div
                             onClick={e => e.stopPropagation()}
-                            style={{
-                                background: '#ffffff', borderRadius: 14, width: 520, maxWidth: '95vw',
-                                boxShadow: '0 24px 64px rgba(0,0,0,0.22)', fontFamily: 'system-ui, sans-serif',
-                                overflow: 'hidden',
-                            }}
+                            style={{ background: '#ffffff', borderRadius: 14, width: 520, maxWidth: '95vw', boxShadow: '0 24px 64px rgba(0,0,0,0.22)', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}
                         >
-                            {/* Header */}
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px', borderBottom: '1px solid #e2e8f0' }}>
                                 <div>
                                     <div style={{ fontSize: 17, fontWeight: 700, color: '#0f172a' }}>Jenkins Configuration</div>
                                     <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>Connect Argus Agent to your Jenkins server</div>
                                 </div>
-                                <button
-                                    onClick={() => this.setState({ showConfig: false })}
-                                    style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, width: 32, height: 32, fontSize: 18, cursor: 'pointer', color: '#475569', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                                >×</button>
+                                <button onClick={() => this.setState({ showConfig: false })} style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, width: 32, height: 32, fontSize: 18, cursor: 'pointer', color: '#475569', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
                             </div>
-
-                            {/* Body */}
                             <div style={{ padding: '24px 24px 8px' }}>
-                                {/* Jenkins URL */}
                                 <div style={{ marginBottom: 18 }}>
-                                    <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>
-                                        Jenkins URL
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={jenkinsConfig.url}
-                                        onChange={e => this.handleConfigChange('url', e.target.value)}
-                                        placeholder="http://localhost:8080"
-                                        style={{
-                                            display: 'block', width: '100%', padding: '10px 13px',
-                                            fontSize: 14, color: '#0f172a', background: '#f8faff',
-                                            border: '1.5px solid #cbd5e1', borderRadius: 7, outline: 'none',
-                                            fontFamily: 'system-ui, sans-serif',
-                                        }}
-                                    />
+                                    <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>Jenkins URL</label>
+                                    <input type="text" value={jenkinsConfig.url} onChange={e => this.handleConfigChange('url', e.target.value)} placeholder="http://localhost:8080" style={{ display: 'block', width: '100%', padding: '10px 13px', fontSize: 14, color: '#0f172a', background: '#f8faff', border: '1.5px solid #cbd5e1', borderRadius: 7, outline: 'none', fontFamily: 'system-ui, sans-serif' }} />
                                 </div>
-
-                                {/* Username + Token side by side */}
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 18 }}>
                                     <div>
-                                        <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>
-                                            Username
-                                        </label>
-                                        <input
-                                            type="text"
-                                            value={jenkinsConfig.user}
-                                            onChange={e => this.handleConfigChange('user', e.target.value)}
-                                            placeholder="admin"
-                                            style={{
-                                                display: 'block', width: '100%', padding: '10px 13px',
-                                                fontSize: 14, color: '#0f172a', background: '#f8faff',
-                                                border: '1.5px solid #cbd5e1', borderRadius: 7, outline: 'none',
-                                                fontFamily: 'system-ui, sans-serif',
-                                            }}
-                                        />
+                                        <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>Username</label>
+                                        <input type="text" value={jenkinsConfig.user} onChange={e => this.handleConfigChange('user', e.target.value)} placeholder="admin" style={{ display: 'block', width: '100%', padding: '10px 13px', fontSize: 14, color: '#0f172a', background: '#f8faff', border: '1.5px solid #cbd5e1', borderRadius: 7, outline: 'none', fontFamily: 'system-ui, sans-serif' }} />
                                     </div>
                                     <div>
-                                        <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>
-                                            API Token
-                                        </label>
-                                        <input
-                                            type="password"
-                                            value={jenkinsConfig.token}
-                                            onChange={e => this.handleConfigChange('token', e.target.value)}
-                                            placeholder="Your Jenkins API token"
-                                            style={{
-                                                display: 'block', width: '100%', padding: '10px 13px',
-                                                fontSize: 14, color: '#0f172a', background: '#f8faff',
-                                                border: '1.5px solid #cbd5e1', borderRadius: 7, outline: 'none',
-                                                fontFamily: 'system-ui, sans-serif',
-                                            }}
-                                        />
+                                        <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>API Token</label>
+                                        <input type="password" value={jenkinsConfig.token} onChange={e => this.handleConfigChange('token', e.target.value)} placeholder="Your Jenkins API token" style={{ display: 'block', width: '100%', padding: '10px 13px', fontSize: 14, color: '#0f172a', background: '#f8faff', border: '1.5px solid #cbd5e1', borderRadius: 7, outline: 'none', fontFamily: 'system-ui, sans-serif' }} />
                                     </div>
                                 </div>
-
-                                {/* Hint */}
                                 <div style={{ fontSize: 12, color: '#64748b', background: '#f8faff', border: '1px solid #e2e8f0', borderRadius: 7, padding: '10px 14px', marginBottom: 24 }}>
-                                    💡 Get your API token: Jenkins → click your username (top right) → Configure → API Token → Generate New Token
+                                    💡 Get your API token: Jenkins → click your username → Configure → API Token → Generate New Token
                                 </div>
                             </div>
-
-                            {/* Footer */}
                             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '16px 24px', background: '#f8faff', borderTop: '1px solid #e2e8f0' }}>
-                                <button
-                                    onClick={() => this.setState({ showConfig: false })}
-                                    style={{ padding: '9px 18px', fontSize: 13, fontWeight: 500, color: '#475569', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 7, cursor: 'pointer', fontFamily: 'system-ui, sans-serif' }}
-                                >
-                                    Cancel
-                                </button>
+                                <button onClick={() => this.setState({ showConfig: false })} style={{ padding: '9px 18px', fontSize: 13, fontWeight: 500, color: '#475569', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 7, cursor: 'pointer', fontFamily: 'system-ui, sans-serif' }}>Cancel</button>
                                 <button
                                     onClick={this.updateJenkinsConfig}
                                     disabled={loading || !jenkinsConfig.user || !jenkinsConfig.token}
-                                    style={{
-                                        padding: '9px 20px', fontSize: 13, fontWeight: 600, color: '#fff',
-                                        background: loading || !jenkinsConfig.user || !jenkinsConfig.token ? '#94a3b8' : '#4361ee',
-                                        border: 'none', borderRadius: 7, cursor: loading || !jenkinsConfig.user || !jenkinsConfig.token ? 'not-allowed' : 'pointer',
-                                        fontFamily: 'system-ui, sans-serif',
-                                    }}
+                                    style={{ padding: '9px 20px', fontSize: 13, fontWeight: 600, color: '#fff', background: loading || !jenkinsConfig.user || !jenkinsConfig.token ? '#94a3b8' : '#4361ee', border: 'none', borderRadius: 7, cursor: loading || !jenkinsConfig.user || !jenkinsConfig.token ? 'not-allowed' : 'pointer', fontFamily: 'system-ui, sans-serif' }}
                                 >
                                     {loading ? 'Saving…' : 'Save & Connect'}
                                 </button>
@@ -736,7 +908,6 @@ class JenkinsDashboardComponent extends Component {
                         </div>
                     </div>
                 )}
-
             </div>
         );
     }
