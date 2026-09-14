@@ -53,7 +53,8 @@ public class JenkinsService {
     private String jobName;
     private String jenkinsUser;
     private String jenkinsToken;
-    private String slackWebhookUrl; // per-client, stored in DB
+    private String slackWebhookUrl;     // per-client, stored in DB
+    private Long   slaDurationSeconds;  // 0 / null = disabled
 
     @Value("${ml.service.url}")
     private String mlServiceUrl;
@@ -133,7 +134,8 @@ public class JenkinsService {
             this.jobName         = saved.getJob();
             this.jenkinsUser     = saved.getUser();
             this.jenkinsToken    = saved.getToken();
-            this.slackWebhookUrl = saved.getSlackWebhookUrl();
+            this.slackWebhookUrl    = saved.getSlackWebhookUrl();
+            this.slaDurationSeconds = saved.getSlaDurationSeconds();
             log.info("[CONFIG] Loaded Jenkins config from database");
         }, () -> {
             this.jenkinsUrl   = this.defaultJenkinsUrl;
@@ -152,6 +154,12 @@ public class JenkinsService {
             if (config.containsKey("token"))            this.jenkinsToken    = config.get("token");
             if (config.containsKey("job"))              this.jobName         = config.get("job");
             if (config.containsKey("slackWebhookUrl"))  this.slackWebhookUrl = config.get("slackWebhookUrl");
+            if (config.containsKey("slaDurationSeconds") && !config.get("slaDurationSeconds").isBlank()) {
+                try { this.slaDurationSeconds = Long.parseLong(config.get("slaDurationSeconds")); }
+                catch (NumberFormatException ignored) {}
+            } else if (config.containsKey("slaDurationSeconds")) {
+                this.slaDurationSeconds = null; // blank = disabled
+            }
 
             // Test the connection with new credentials
             List<JenkinsJob> jobs = getAllJobs();
@@ -164,6 +172,7 @@ public class JenkinsService {
             saved.setUser(this.jenkinsUser);
             saved.setToken(this.jenkinsToken);
             saved.setSlackWebhookUrl(this.slackWebhookUrl);
+            saved.setSlaDurationSeconds(this.slaDurationSeconds);
             configRepository.save(saved);
             log.info("[CONFIG] Jenkins config saved to database");
 
@@ -197,6 +206,10 @@ public class JenkinsService {
         boolean slackConfigured = this.slackWebhookUrl != null && !this.slackWebhookUrl.isBlank();
         config.put("slackConfigured", slackConfigured);
         config.put("slackWebhookUrl", slackConfigured ? "***configured***" : "");
+
+        config.put("slaDurationSeconds",
+            this.slaDurationSeconds != null && this.slaDurationSeconds > 0
+                ? String.valueOf(this.slaDurationSeconds) : "");
 
         return config;
     }
@@ -434,6 +447,7 @@ public class JenkinsService {
                     job.setFlaky(Boolean.TRUE.equals(cached.get("flaky")));
                     Object cf = cached.get("consecutiveFailures");
                     if (cf instanceof Number) job.setConsecutiveFailures(((Number) cf).intValue());
+                    job.setSlaBreach(Boolean.TRUE.equals(cached.get("slaBreach")));
                 }
             }
 
@@ -664,6 +678,18 @@ public class JenkinsService {
                 log.warn("ML service call failed: {}", e.getMessage());
             }
 
+            // SLA breach check
+            boolean slaBreach = slaDurationSeconds != null && slaDurationSeconds > 0
+                && latest.getDuration() != null && latest.getDuration() > slaDurationSeconds;
+            if (slaBreach) {
+                log.info("[SLA] Breach for job={} duration={}s sla={}s", jobName, latest.getDuration(), slaDurationSeconds);
+                if (canAlert(jobName + "_sla")) {
+                    slackAlertService.sendSlaBreachAlert(slackWebhookUrl, jobName, latest.getDuration(), slaDurationSeconds);
+                    markAlerted(jobName + "_sla");
+                }
+            }
+            result.put("slaBreach", slaBreach);
+
             // Failure always counts as anomaly
             if ("FAILURE".equalsIgnoreCase(currentStatus)) {
                 anomaly = true;
@@ -698,6 +724,7 @@ public class JenkinsService {
             lastKnownStatus.put(jobName, currentStatus);
         } else {
             result.put("consecutiveFailures", 0);
+            result.put("slaBreach", false);
         }
 
         // Failure prediction — requires ≥5 builds in history

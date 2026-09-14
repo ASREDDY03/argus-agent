@@ -140,6 +140,18 @@ function StreakBadge({ count }) {
     );
 }
 
+function SlaBadge({ breach }) {
+    if (!breach) return null;
+    return (
+        <span title="Build exceeded configured SLA threshold" style={{
+            fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+            color: '#9333ea', background: 'rgba(147,51,234,0.12)', letterSpacing: '0.03em',
+        }}>
+            ⏱ SLA Breach
+        </span>
+    );
+}
+
 function RiskBadge({ riskLevel, probability }) {
     if (!riskLevel || riskLevel === 'LOW') return null;
     const cfg = {
@@ -288,6 +300,7 @@ class JenkinsDashboardComponent extends Component {
                 token: '',
                 job: 'test-job',
                 slackWebhookUrl: '',
+                slaDurationSeconds: '',
             },
         };
         this.ws = null;
@@ -682,6 +695,7 @@ class JenkinsDashboardComponent extends Component {
                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                                         {job.anomaly && <span className="anomaly-badge">⚠ Anomaly</span>}
                                                         <StreakBadge count={job.consecutiveFailures} />
+                                                        <SlaBadge breach={job.slaBreach} />
                                                         <RiskBadge riskLevel={job.riskLevel} probability={job.failureProbability} />
                                                         <FlakyBadge flaky={job.flaky} score={job.flakinessScore} />
                                                     </div>
@@ -881,6 +895,16 @@ class JenkinsDashboardComponent extends Component {
                                                 <span className="anomaly-badge">⚠ Anomaly Detected</span>
                                                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                                                     build duration or status is outside normal range
+                                                </span>
+                                            </div>
+                                        )}
+
+                                        {/* SLA breach */}
+                                        {jobDetails.slaBreach && (
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                <SlaBadge breach={true} />
+                                                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                                    build duration exceeded your configured SLA threshold
                                                 </span>
                                             </div>
                                         )}
@@ -1109,6 +1133,25 @@ class JenkinsDashboardComponent extends Component {
                                     />
                                     <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
                                         Alerts for failures, anomalies, and recoveries go to your channel. Leave blank to disable.
+                                    </div>
+                                </div>
+
+                                {/* SLA threshold */}
+                                <div style={{ marginBottom: 18 }}>
+                                    <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>
+                                        Build Time SLA
+                                        <span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 6 }}>seconds · optional</span>
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        value={jenkinsConfig.slaDurationSeconds}
+                                        onChange={e => this.handleConfigChange('slaDurationSeconds', e.target.value)}
+                                        placeholder="e.g. 300"
+                                        style={{ display: 'block', width: '100%', padding: '10px 13px', fontSize: 14, color: '#0f172a', background: '#f8faff', border: '1.5px solid #cbd5e1', borderRadius: 7, outline: 'none', fontFamily: 'system-ui, sans-serif' }}
+                                    />
+                                    <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                                        Any build exceeding this duration triggers a purple SLA Breach badge and Slack alert.
                                     </div>
                                 </div>
 

@@ -19,6 +19,7 @@ public class JenkinsConfig {
     private String user;
     private String token;
     private String slackWebhookUrl;
+    private Long slaDurationSeconds; // max acceptable build duration; null = disabled
 
     public JenkinsConfig() {}
 
@@ -34,4 +35,6 @@ public class JenkinsConfig {
     public void setUser(String user) { this.user = user; }
     public void setToken(String token) { this.token = token; }
     public void setSlackWebhookUrl(String slackWebhookUrl) { this.slackWebhookUrl = slackWebhookUrl; }
+    public Long getSlaDurationSeconds() { return slaDurationSeconds; }
+    public void setSlaDurationSeconds(Long slaDurationSeconds) { this.slaDurationSeconds = slaDurationSeconds; }
 }
