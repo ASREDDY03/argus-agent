@@ -995,7 +995,19 @@ class JenkinsDashboardComponent extends Component {
                                         {/* Build history */}
                                         {jobDetails.history && jobDetails.history.length > 0 && (
                                             <div>
-                                                <div className="section-title">Build History</div>
+                                                <div className="section-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                                    <span>Build History</span>
+                                                    {!demoMode && (
+                                                        <a
+                                                            href={`/api/jobs/${encodeURIComponent(selectedJob?.jobName)}/history/export`}
+                                                            download
+                                                            className="btn btn-ghost btn-sm"
+                                                            style={{ fontSize: 11, textDecoration: 'none' }}
+                                                        >
+                                                            ↓ CSV
+                                                        </a>
+                                                    )}
+                                                </div>
                                                 <table className="history-table">
                                                     <thead>
                                                         <tr>

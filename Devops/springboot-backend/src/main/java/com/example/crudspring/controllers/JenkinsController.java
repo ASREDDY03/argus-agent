@@ -6,6 +6,9 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import com.example.crudspring.services.JenkinsService;
 import com.example.crudspring.models.JenkinsJob;
 import com.example.crudspring.models.JenkinsBuildSummary;
@@ -85,6 +88,16 @@ public class JenkinsController {
     @GetMapping("/api/jobs/{jobName}/stages")
     public List<Map<String, Object>> getJobStages(@PathVariable String jobName) {
         return jenkinsService.getJobStages(jobName);
+    }
+
+    @GetMapping("/api/jobs/{jobName}/history/export")
+    public ResponseEntity<String> exportBuildHistory(@PathVariable String jobName) {
+        String csv = jenkinsService.exportBuildHistoryCsv(jobName);
+        String filename = jobName.replaceAll("[^a-zA-Z0-9_-]", "_") + "_build_history.csv";
+        return ResponseEntity.ok()
+            .contentType(MediaType.parseMediaType("text/csv"))
+            .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+            .body(csv);
     }
 
     @PostMapping("/api/jobs/{jobName}/trigger")
