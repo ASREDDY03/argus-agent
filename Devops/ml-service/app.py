@@ -15,7 +15,10 @@ app = Flask(__name__)
 DATA_DIR = os.environ.get('ML_DATA_DIR', '/data')
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, 'argus_ml.db')
-MODEL_PATH = os.path.join(DATA_DIR, 'argus_model.pkl')
+
+# ── In-memory model caches ────────────────────────────────────────────────────
+_rf_cache: dict = {}
+_if_cache: dict = {}
 
 # ── SQLite persistence ────────────────────────────────────────────────────────
 
@@ -49,36 +52,83 @@ def save_builds(job_name, durations, statuses):
     conn.commit()
     conn.close()
 
-def load_all_durations():
+def load_job_durations(job_name):
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute('SELECT duration FROM build_history ORDER BY ts DESC LIMIT 500').fetchall()
+    rows = conn.execute(
+        'SELECT duration FROM build_history WHERE job_name = ? ORDER BY ts DESC LIMIT 500',
+        (job_name,)
+    ).fetchall()
     conn.close()
     return [r[0] for r in rows]
 
-# ── Model persistence ─────────────────────────────────────────────────────────
+def load_job_history(job_name):
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        'SELECT duration, status FROM build_history WHERE job_name = ? ORDER BY ts DESC LIMIT 200',
+        (job_name,)
+    ).fetchall()
+    conn.close()
+    return [{'duration': r[0], 'status': r[1]} for r in rows]
 
-def load_model():
-    if os.path.exists(MODEL_PATH):
-        with open(MODEL_PATH, 'rb') as f:
-            return pickle.load(f)
+def count_all_samples():
+    conn = sqlite3.connect(DB_PATH)
+    count = conn.execute('SELECT COUNT(*) FROM build_history').fetchone()[0]
+    conn.close()
+    return count
+
+# ── Model persistence (per-job) ───────────────────────────────────────────────
+
+def _if_model_path(job_name):
+    safe = re.sub(r'[^a-zA-Z0-9_-]', '_', job_name)
+    return os.path.join(DATA_DIR, f'if_model_{safe}.pkl')
+
+def _rf_model_path(job_name):
+    safe = re.sub(r'[^a-zA-Z0-9_-]', '_', job_name)
+    return os.path.join(DATA_DIR, f'rf_model_{safe}.pkl')
+
+def load_if_model(job_name):
+    if job_name in _if_cache:
+        return _if_cache[job_name]
+    path = _if_model_path(job_name)
+    if os.path.exists(path):
+        with open(path, 'rb') as f:
+            model = pickle.load(f)
+        _if_cache[job_name] = model
+        return model
     return None
 
-def save_model(model):
-    with open(MODEL_PATH, 'wb') as f:
+def save_if_model(job_name, model):
+    _if_cache[job_name] = model
+    with open(_if_model_path(job_name), 'wb') as f:
         pickle.dump(model, f)
 
-def get_or_train_model(durations):
-    model = load_model()
-    all_durations = load_all_durations()
-    combined = list(set(all_durations + list(durations)))
+def load_rf_model(job_name):
+    if job_name in _rf_cache:
+        return _rf_cache[job_name]
+    path = _rf_model_path(job_name)
+    if os.path.exists(path):
+        with open(path, 'rb') as f:
+            model = pickle.load(f)
+        _rf_cache[job_name] = model
+        return model
+    return None
 
-    if model is None or len(combined) > len(all_durations):
-        # Retrain with all historical + new data
+def save_rf_model(job_name, model):
+    _rf_cache[job_name] = model
+    with open(_rf_model_path(job_name), 'wb') as f:
+        pickle.dump(model, f)
+
+def get_or_train_if_model(job_name, durations):
+    model = load_if_model(job_name)
+    persisted = load_job_durations(job_name)
+    combined = list(set(persisted + list(durations)))
+
+    if model is None or len(combined) > len(persisted):
         X = np.array(combined).reshape(-1, 1)
         model = IsolationForest(contamination=0.1, random_state=42)
         model.fit(X)
-        save_model(model)
-        print(f"[ML] Model retrained on {len(combined)} samples")
+        save_if_model(job_name, model)
+        print(f"[ML] IF model retrained for {job_name} on {len(combined)} samples")
 
     return model
 
@@ -88,8 +138,8 @@ def get_or_train_model(durations):
 def analyze():
     print("[ML SERVICE] /analyze called")
     data = request.get_json()
-    durations  = np.array(data.get('durations', []))
-    statuses   = data.get('statuses', [])
+    durations       = np.array(data.get('durations', []))
+    statuses        = data.get('statuses', [])
     latest_status   = data.get('latest_status', '')
     latest_duration = data.get('latest_duration', 0)
     job_name        = data.get('job_name', 'unknown')
@@ -107,8 +157,8 @@ def analyze():
         # Persist incoming builds
         save_builds(job_name, durations, statuses)
 
-        # Use persisted model for detection
-        model = get_or_train_model(durations)
+        # Per-job IF model for detection
+        model = get_or_train_if_model(job_name, durations)
         preds = model.predict(durations.reshape(-1, 1))
         for i, pred in enumerate(preds):
             if pred == -1:
@@ -129,16 +179,33 @@ def analyze():
 @app.route('/predict-failure', methods=['POST'])
 def predict_failure():
     data = request.json
-    history = data.get('history', [])
+    job_name = data.get('job_name', 'default')
+
+    # Prefer persisted history from DB; fall back to request payload
+    history = load_job_history(job_name) or data.get('history', [])
     if len(history) < 5:
         return jsonify({'prob_failure': 0.0, 'note': 'Not enough data'})
+
     df = pd.DataFrame(history)
     X = df[['duration']]
     y = df['status']
-    clf = RandomForestClassifier(n_estimators=10, random_state=42)
-    clf.fit(X, y)
-    next_duration = np.mean(df['duration'])
-    prob_failure = 1 - clf.predict_proba([[next_duration]])[0][1]
+
+    # Only train when no saved model exists — don't throw away the warm model
+    clf = load_rf_model(job_name)
+    if clf is None:
+        clf = RandomForestClassifier(n_estimators=10, random_state=42)
+        clf.fit(X, y)
+        save_rf_model(job_name, clf)
+
+    # Use the most recent build duration (history is ordered DESC)
+    next_duration = df['duration'].iloc[0]
+
+    # Guard: if training data has only one class, predict_proba won't have a [1] column
+    classes = list(clf.classes_)
+    if 1 not in classes:
+        return jsonify({'prob_failure': 1.0, 'note': 'No successful builds in training data'})
+    success_idx = classes.index(1)
+    prob_failure = 1 - clf.predict_proba([[next_duration]])[0][success_idx]
     return jsonify({'prob_failure': float(prob_failure)})
 
 
@@ -159,17 +226,17 @@ def analyze_logs():
 
 @app.route('/health', methods=['GET'])
 def health():
-    all_dur = load_all_durations()
-    model_exists = os.path.exists(MODEL_PATH)
+    total = count_all_samples()
     return jsonify({
         'status': 'ok',
-        'persisted_samples': len(all_dur),
-        'model_trained': model_exists
+        'persisted_samples': total,
+        'if_models_cached': len(_if_cache),
+        'rf_models_cached': len(_rf_cache),
     })
 
 
 if __name__ == '__main__':
     nltk.download('punkt', quiet=True)
     init_db()
-    print(f"[ML] DB: {DB_PATH} | Model: {MODEL_PATH}")
+    print(f"[ML] DB: {DB_PATH}")
     app.run(host='0.0.0.0', port=8000)
