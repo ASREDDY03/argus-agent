@@ -293,6 +293,8 @@ class JenkinsDashboardComponent extends Component {
             triggerMsg: null,
             trendsData: {},       // jobName → { history, trends }
             loadingTrends: false,
+            alerts: [],
+            loadingAlerts: false,
             wsConnected: false,
             jenkinsConfig: {
                 url: 'http://localhost:8080',
@@ -419,6 +421,13 @@ class JenkinsDashboardComponent extends Component {
         });
     }
 
+    loadAlertsTab() {
+        this.setState({ loadingAlerts: true });
+        JenkinsService.getAlerts()
+            .then(res => this.setState({ alerts: res.data || [], loadingAlerts: false }))
+            .catch(() => this.setState({ loadingAlerts: false }));
+    }
+
     closeDrawer() {
         this.setState({ showDetails: false, selectedJob: null, jobDetails: null, jobSummary: null });
     }
@@ -485,7 +494,8 @@ class JenkinsDashboardComponent extends Component {
     render() {
         const { jobs, loading, error, jobDetails, jobSummary, jobStages, selectedJob, showDetails,
                 showConfig, demoMode, activeTab, search, jenkinsConfig,
-                triggeringJob, triggerMsg, trendsData, loadingTrends, wsConnected } = this.state;
+                triggeringJob, triggerMsg, trendsData, loadingTrends, wsConnected,
+                alerts, loadingAlerts } = this.state;
 
         const filtered = jobs.filter(j =>
             !search || j.jobName.toLowerCase().includes(search.toLowerCase())
@@ -570,6 +580,20 @@ class JenkinsDashboardComponent extends Component {
                         onClick={() => { this.setState({ activeTab: 'trends' }); this.loadTrendsTab(); }}
                     >
                         ↗ Trends
+                    </button>
+                    <button
+                        className={`argus-tab${activeTab === 'alerts' ? ' active' : ''}`}
+                        onClick={() => { this.setState({ activeTab: 'alerts' }); this.loadAlertsTab(); }}
+                    >
+                        🔔 Alerts
+                        {alerts.filter(a => {
+                            const d = new Date(a.timestamp);
+                            return (Date.now() - d) < 86400000;
+                        }).length > 0 && (
+                            <span className="tab-count">
+                                {alerts.filter(a => (Date.now() - new Date(a.timestamp)) < 86400000).length}
+                            </span>
+                        )}
                     </button>
                     <button
                         className={`argus-tab${activeTab === 'grafana' ? ' active' : ''}`}
@@ -816,6 +840,67 @@ class JenkinsDashboardComponent extends Component {
                                                         </td>
                                                         <td>
                                                             {t ? <TrendBadge trend={t.trend} /> : '—'}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* ── Alerts tab ── */}
+                    {activeTab === 'alerts' && (
+                        <div>
+                            <div style={{ marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <div>
+                                    <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>Alert History</div>
+                                    <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                                        Last 100 alerts across all jobs — failures, anomalies, recoveries, SLA breaches.
+                                        {loadingAlerts && <span style={{ marginLeft: 8, opacity: 0.6 }}>Loading…</span>}
+                                    </div>
+                                </div>
+                                <button className="btn btn-ghost btn-sm" onClick={() => this.loadAlertsTab()} disabled={loadingAlerts}>↻ Refresh</button>
+                            </div>
+
+                            {alerts.length === 0 && !loadingAlerts ? (
+                                <div className="empty-state">
+                                    <div className="empty-icon">🔔</div>
+                                    <div className="empty-title">No alerts yet</div>
+                                    <div className="empty-sub">Alerts fire when builds fail, anomalies are detected, or SLA thresholds are breached.</div>
+                                </div>
+                            ) : (
+                                <div className="jobs-table-wrap">
+                                    <table className="jobs-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Time</th>
+                                                <th>Job</th>
+                                                <th>Type</th>
+                                                <th>Message</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {alerts.map(alert => {
+                                                const typeCfg = {
+                                                    FAILURE:    { label: 'Failure',    color: '#ef4444', bg: 'rgba(239,68,68,0.12)'    },
+                                                    ANOMALY:    { label: 'Anomaly',    color: '#f59e0b', bg: 'rgba(245,158,11,0.12)'   },
+                                                    RECOVERY:   { label: 'Recovery',   color: '#22c55e', bg: 'rgba(34,197,94,0.12)'    },
+                                                    SLA_BREACH: { label: 'SLA Breach', color: '#9333ea', bg: 'rgba(147,51,234,0.12)'   },
+                                                }[alert.alertType] || { label: alert.alertType, color: '#94a3b8', bg: 'rgba(148,163,184,0.1)' };
+                                                return (
+                                                    <tr key={alert.id}>
+                                                        <td><span className="ts-text">{formatTs(alert.timestamp)}</span></td>
+                                                        <td><span className="job-name" style={{ fontSize: 13 }}>{alert.jobName}</span></td>
+                                                        <td>
+                                                            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 4, color: typeCfg.color, background: typeCfg.bg }}>
+                                                                {typeCfg.label}
+                                                            </span>
+                                                        </td>
+                                                        <td style={{ fontSize: 12, color: 'var(--text-secondary)', maxWidth: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                            {alert.message}
                                                         </td>
                                                     </tr>
                                                 );

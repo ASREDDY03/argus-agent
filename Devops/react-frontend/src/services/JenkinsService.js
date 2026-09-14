@@ -44,6 +44,10 @@ class JenkinsService {
         return axios.get(`${API_BASE_URL}/jobs/${encodeURIComponent(jobName)}/stages`);
     }
 
+    getAlerts() {
+        return axios.get(`${API_BASE_URL}/alerts`);
+    }
+
     triggerBuild(jobName) {
         return axios.post(`${API_BASE_URL}/jobs/${encodeURIComponent(jobName)}/trigger`);
     }

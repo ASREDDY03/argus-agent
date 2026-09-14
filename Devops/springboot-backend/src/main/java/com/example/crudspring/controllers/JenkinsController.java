@@ -9,6 +9,8 @@ import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import com.example.crudspring.models.AlertRecord;
+import com.example.crudspring.repository.AlertRecordRepository;
 import com.example.crudspring.services.JenkinsService;
 import com.example.crudspring.models.JenkinsJob;
 import com.example.crudspring.models.JenkinsBuildSummary;
@@ -23,10 +25,13 @@ import java.util.HashMap;
 public class JenkinsController {
     private final JenkinsService jenkinsService;
     private final JenkinsPoller jenkinsPoller;
+    private final AlertRecordRepository alertRecordRepository;
 
-    public JenkinsController(JenkinsService jenkinsService, JenkinsPoller jenkinsPoller) {
-        this.jenkinsService = jenkinsService;
-        this.jenkinsPoller  = jenkinsPoller;
+    public JenkinsController(JenkinsService jenkinsService, JenkinsPoller jenkinsPoller,
+                             AlertRecordRepository alertRecordRepository) {
+        this.jenkinsService        = jenkinsService;
+        this.jenkinsPoller         = jenkinsPoller;
+        this.alertRecordRepository = alertRecordRepository;
     }
 
     @GetMapping("/api/jobs")
@@ -103,6 +108,11 @@ public class JenkinsController {
     @PostMapping("/api/jobs/{jobName}/trigger")
     public Map<String, Object> triggerBuild(@PathVariable String jobName) {
         return jenkinsService.triggerBuild(jobName);
+    }
+
+    @GetMapping("/api/alerts")
+    public List<AlertRecord> getAlerts() {
+        return alertRecordRepository.findTop100ByOrderByTimestampDesc();
     }
 
     @GetMapping("/api/jenkins/mock")
