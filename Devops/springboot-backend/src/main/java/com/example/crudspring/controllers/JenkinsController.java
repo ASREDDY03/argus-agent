@@ -13,6 +13,7 @@ import com.example.crudspring.websocket.JenkinsPoller;
 
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 
 @RestController
 @CrossOrigin(originPatterns = "*")
@@ -79,6 +80,11 @@ public class JenkinsController {
     @GetMapping("/api/jenkins/config")
     public Map<String, Object> getJenkinsConfig() {
         return jenkinsService.getJenkinsConfig();
+    }
+
+    @GetMapping("/api/jobs/{jobName}/stages")
+    public List<Map<String, Object>> getJobStages(@PathVariable String jobName) {
+        return jenkinsService.getJobStages(jobName);
     }
 
     @PostMapping("/api/jobs/{jobName}/trigger")
