@@ -16,6 +16,7 @@ public class JenkinsJob {
     private Boolean flaky;         // true when flakinessScore > 0.4
     private Integer consecutiveFailures;
     private Boolean slaBreach;
+    private Integer healthScore; // 0–100 composite: success rate + trend + streak + risk
 
     public JenkinsJob() {}
 
@@ -48,4 +49,6 @@ public class JenkinsJob {
     public void setConsecutiveFailures(Integer consecutiveFailures) { this.consecutiveFailures = consecutiveFailures; }
     public Boolean getSlaBreach() { return slaBreach; }
     public void setSlaBreach(Boolean slaBreach) { this.slaBreach = slaBreach; }
+    public Integer getHealthScore() { return healthScore; }
+    public void setHealthScore(Integer healthScore) { this.healthScore = healthScore; }
 } 

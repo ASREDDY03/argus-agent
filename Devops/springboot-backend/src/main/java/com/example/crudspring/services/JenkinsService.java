@@ -93,6 +93,36 @@ public class JenkinsService {
         return Math.round((double) flips / (history.size() - 1) * 100.0) / 100.0;
     }
 
+    /**
+     * Composite health score 0–100.
+     * Success rate (40 pts) + trend (20 pts) + streak penalty (20 pts) + risk (20 pts).
+     */
+    private int computeHealthScore(List<JenkinsJob> history, int streak, String riskLevel) {
+        if (history.isEmpty()) return 50;
+        int total     = history.size();
+        int successes = (int) history.stream().filter(j -> "SUCCESS".equalsIgnoreCase(j.getStatus())).count();
+
+        // 40 pts: success rate
+        int srPts = (int) Math.round((double) successes / total * 40);
+
+        // 20 pts: trend — compare last 5 vs previous 5
+        int trendPts = 10; // stable default
+        if (total >= 10) {
+            long recentOk = history.subList(total - 5, total).stream().filter(j -> "SUCCESS".equalsIgnoreCase(j.getStatus())).count();
+            long olderOk  = history.subList(total - 10, total - 5).stream().filter(j -> "SUCCESS".equalsIgnoreCase(j.getStatus())).count();
+            if (recentOk > olderOk)      trendPts = 20;
+            else if (recentOk < olderOk) trendPts = 0;
+        }
+
+        // 20 pts: streak (lose 5 per consecutive failure)
+        int streakPts = Math.max(0, 20 - streak * 5);
+
+        // 20 pts: ML risk level
+        int riskPts = "HIGH".equals(riskLevel) ? 0 : "MEDIUM".equals(riskLevel) ? 10 : 20;
+
+        return Math.min(100, srPts + trendPts + streakPts + riskPts);
+    }
+
     private boolean canAlert(String jobName) {
         long now = System.currentTimeMillis();
         Long last = lastAlertTime.get(jobName);
@@ -448,6 +478,8 @@ public class JenkinsService {
                     Object cf = cached.get("consecutiveFailures");
                     if (cf instanceof Number) job.setConsecutiveFailures(((Number) cf).intValue());
                     job.setSlaBreach(Boolean.TRUE.equals(cached.get("slaBreach")));
+                    Object hs = cached.get("healthScore");
+                    if (hs instanceof Number) job.setHealthScore(((Number) hs).intValue());
                 }
             }
 
@@ -758,13 +790,15 @@ public class JenkinsService {
         }
 
         double flakinessScore = computeFlakiness(jobs);
+        int healthScore = computeHealthScore(jobs, streak, riskLevel);
         result.put("anomaly", anomaly);
         result.put("insight", insight);
         result.put("failureProbability", failureProbability);
         result.put("riskLevel", riskLevel);
         result.put("flakinessScore", flakinessScore);
         result.put("flaky", flakinessScore > 0.4);
-        log.info("[RESULT] job={} anomaly={} risk={} flakiness={}", jobName, anomaly, riskLevel, flakinessScore);
+        result.put("healthScore", healthScore);
+        log.info("[RESULT] job={} anomaly={} risk={} flakiness={} health={}", jobName, anomaly, riskLevel, flakinessScore, healthScore);
         return result;
     }
 
@@ -776,6 +810,7 @@ public class JenkinsService {
         frontend.setFlakinessScore(0.0);
         frontend.setFlaky(false);
         frontend.setConsecutiveFailures(0);
+        frontend.setHealthScore(62);
 
         JenkinsJob backend = new JenkinsJob("backend-api", "FAILURE", LocalDateTime.now().minusMinutes(12), 30L);
         backend.setAnomaly(true);
@@ -784,6 +819,7 @@ public class JenkinsService {
         backend.setFlakinessScore(0.5);
         backend.setFlaky(true);
         backend.setConsecutiveFailures(2);
+        backend.setHealthScore(18);
 
         JenkinsJob ml = new JenkinsJob("ml-pipeline", "SUCCESS", LocalDateTime.now().minusMinutes(30), 90L);
         ml.setAnomaly(false);
@@ -792,6 +828,7 @@ public class JenkinsService {
         ml.setFlakinessScore(0.0);
         ml.setFlaky(false);
         ml.setConsecutiveFailures(0);
+        ml.setHealthScore(94);
 
         return java.util.Arrays.asList(frontend, backend, ml);
     }
@@ -847,6 +884,9 @@ public class JenkinsService {
         }
 
         double mockFlakiness = "backend-api".equals(jobName) ? 0.5 : 0.0;
+        String rl = result.containsKey("riskLevel") ? (String) result.get("riskLevel") : "LOW";
+        result.put("healthScore", result.containsKey("healthScore") ? result.get("healthScore")
+            : computeHealthScore(history, 0, rl));
         result.put("history", history);
         result.put("anomaly", anomaly);
         result.put("insight", insight);
