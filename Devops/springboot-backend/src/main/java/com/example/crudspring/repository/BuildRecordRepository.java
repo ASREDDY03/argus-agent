@@ -6,5 +6,6 @@ import java.util.List;
 
 public interface BuildRecordRepository extends JpaRepository<BuildRecord, Long> {
     List<BuildRecord> findByJobNameOrderByTimestampAsc(String jobName);
+    List<BuildRecord> findTop20ByJobNameOrderByTimestampDesc(String jobName);
     boolean existsByJobNameAndBuildNumber(String jobName, Integer buildNumber);
 }

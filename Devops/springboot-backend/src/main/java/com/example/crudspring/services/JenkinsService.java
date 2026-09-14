@@ -102,6 +102,18 @@ public class JenkinsService {
         lastAlertTime.put(jobName, System.currentTimeMillis());
     }
 
+    /** Counts how many of the most recent builds are consecutive FAILURE, reading from DB. */
+    private int computeConsecutiveFailures(String jobName) {
+        List<com.example.crudspring.models.BuildRecord> recent =
+            buildRecordRepository.findTop20ByJobNameOrderByTimestampDesc(jobName);
+        int streak = 0;
+        for (com.example.crudspring.models.BuildRecord r : recent) {
+            if ("FAILURE".equalsIgnoreCase(r.getStatus())) streak++;
+            else break;
+        }
+        return streak;
+    }
+
     public JenkinsService(MeterRegistry meterRegistry, SlackAlertService slackAlertService,
                           ClaudeInsightService claudeInsightService,
                           JenkinsConfigRepository configRepository,
@@ -409,7 +421,7 @@ public class JenkinsService {
                     }
                 }
             }
-            // Merge cached anomaly/risk data so every broadcast carries insights
+            // Merge cached anomaly/risk/streak data so every broadcast carries insights
             for (JenkinsJob job : result) {
                 Map<String, Object> cached = insightsCache.get(job.getJobName());
                 if (cached != null) {
@@ -420,6 +432,8 @@ public class JenkinsService {
                     Object fs = cached.get("flakinessScore");
                     if (fs instanceof Number) job.setFlakinessScore(((Number) fs).doubleValue());
                     job.setFlaky(Boolean.TRUE.equals(cached.get("flaky")));
+                    Object cf = cached.get("consecutiveFailures");
+                    if (cf instanceof Number) job.setConsecutiveFailures(((Number) cf).intValue());
                 }
             }
 
@@ -657,24 +671,33 @@ public class JenkinsService {
                 log.info("[ANOMALY] Job failed: {}", jobName);
             }
 
+            // Consecutive failure streak
+            int streak = computeConsecutiveFailures(jobName);
+
             // Call AI once if anomaly detected — fetch real build log first
             if (anomaly) {
                 String buildLog = fetchBuildLog(jobName);
                 insight = claudeInsightService.getInsight(jobName, latest.getDuration(), isFailure, buildLog);
                 if (canAlert(jobName)) {
+                    String escalatedInsight = streak >= 3
+                        ? String.format("🚨 %d consecutive failures — %s", streak, insight)
+                        : insight;
                     if (isFailure) {
-                        slackAlertService.sendBuildFailureAlert(slackWebhookUrl, jobName, latest.getDuration(), insight);
+                        slackAlertService.sendBuildFailureAlert(slackWebhookUrl, jobName, latest.getDuration(), escalatedInsight);
                     } else {
-                        slackAlertService.sendAnomalyAlert(slackWebhookUrl, jobName, latest.getDuration(), insight);
+                        slackAlertService.sendAnomalyAlert(slackWebhookUrl, jobName, latest.getDuration(), escalatedInsight);
                     }
                     markAlerted(jobName);
-                    log.info("[ALERT] Slack alert sent for job={}", jobName);
+                    log.info("[ALERT] Slack alert sent for job={} streak={}", jobName, streak);
                 } else {
                     log.info("[ALERT] Suppressed — cooldown active for job={}", jobName);
                 }
             }
 
+            result.put("consecutiveFailures", streak);
             lastKnownStatus.put(jobName, currentStatus);
+        } else {
+            result.put("consecutiveFailures", 0);
         }
 
         // Failure prediction — requires ≥5 builds in history
@@ -725,6 +748,7 @@ public class JenkinsService {
         frontend.setFailureProbability(0.38);
         frontend.setFlakinessScore(0.0);
         frontend.setFlaky(false);
+        frontend.setConsecutiveFailures(0);
 
         JenkinsJob backend = new JenkinsJob("backend-api", "FAILURE", LocalDateTime.now().minusMinutes(12), 30L);
         backend.setAnomaly(true);
@@ -732,6 +756,7 @@ public class JenkinsService {
         backend.setFailureProbability(0.81);
         backend.setFlakinessScore(0.5);
         backend.setFlaky(true);
+        backend.setConsecutiveFailures(2);
 
         JenkinsJob ml = new JenkinsJob("ml-pipeline", "SUCCESS", LocalDateTime.now().minusMinutes(30), 90L);
         ml.setAnomaly(false);
@@ -739,6 +764,7 @@ public class JenkinsService {
         ml.setFailureProbability(0.07);
         ml.setFlakinessScore(0.0);
         ml.setFlaky(false);
+        ml.setConsecutiveFailures(0);
 
         return java.util.Arrays.asList(frontend, backend, ml);
     }
@@ -760,6 +786,7 @@ public class JenkinsService {
                 insight = "Anomaly detected: Build 3 days ago took 120s vs average of ~44s. Likely cause: npm dependency cache miss or slow registry response during install step.";
                 result.put("failureProbability", 0.38);
                 result.put("riskLevel", "MEDIUM");
+                result.put("consecutiveFailures", 0);
                 break;
             case "backend-api":
                 history.add(new JenkinsJob(jobName, "SUCCESS", LocalDateTime.now().minusDays(4), 55L));
@@ -771,6 +798,7 @@ public class JenkinsService {
                 insight = "FAILURE: 2 consecutive failures detected. Build exits early (30s vs normal 55s) suggesting startup crash. Likely cause: missing environment variable or database connection timeout on deploy. Check application logs for NullPointerException or connection refused errors.";
                 result.put("failureProbability", 0.81);
                 result.put("riskLevel", "HIGH");
+                result.put("consecutiveFailures", 2);
                 break;
             case "ml-pipeline":
                 history.add(new JenkinsJob(jobName, "SUCCESS", LocalDateTime.now().minusDays(5), 88L));
@@ -782,11 +810,13 @@ public class JenkinsService {
                 insight = "All builds healthy. Consistent duration ~90s across 5 builds. No anomalies detected.";
                 result.put("failureProbability", 0.07);
                 result.put("riskLevel", "LOW");
+                result.put("consecutiveFailures", 0);
                 break;
             default:
                 insight = "No mock data available for job: " + jobName;
                 result.put("failureProbability", 0.0);
                 result.put("riskLevel", "LOW");
+                result.put("consecutiveFailures", 0);
         }
 
         double mockFlakiness = "backend-api".equals(jobName) ? 0.5 : 0.0;
