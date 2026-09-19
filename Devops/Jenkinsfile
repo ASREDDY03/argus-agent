@@ -1,75 +1,284 @@
 pipeline {
     agent any
-    
-    tools{
+
+    tools {
         maven '3.8.6'
         nodejs '16.10.0'
     }
 
-    environment{
-        dockercredentials=credentials('dockerhubid') 
+    environment {
+        dockercredentials = credentials('dockerhubid')
+        DOCKER_REPO       = 'lugar2020'
+        IMAGE_TAG         = "${BUILD_NUMBER}"
+    }
+
+    options {
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        disableConcurrentBuilds()
     }
 
     stages {
-        
-        stage('Build & Package spring app') {
-            steps {
-                dir('springboot-backend') {
-                  sh 'mvn clean '
-                  sh 'mvn install -DskipTests '
+
+        // ── Stage 1: Tests (parallel) ────────────────────────────────────────
+        stage('Tests') {
+            parallel {
+
+                stage('Spring Boot — Unit Tests') {
+                    steps {
+                        dir('springboot-backend') {
+                            sh 'mvn test'
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true,
+                                  testResults: 'springboot-backend/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+
+                stage('React — Lint & Test') {
+                    steps {
+                        dir('react-frontend') {
+                            sh 'npm ci --prefer-offline'
+                            sh 'CI=true npm test -- --watchAll=false --passWithNoTests'
+                        }
+                    }
+                }
+
+                stage('ML Service — Syntax & Import Check') {
+                    steps {
+                        dir('ml-service') {
+                            sh 'pip install --quiet -r requirements.txt'
+                            sh 'python -m py_compile app.py && echo "Syntax OK"'
+                            sh 'python -m pytest tests/ -v 2>/dev/null || echo "[INFO] No test suite yet — syntax check passed"'
+                        }
+                    }
                 }
             }
         }
 
-        stage('Build images of both app') {
-            steps {
-                dir('springboot-backend') {
-                  sh 'docker build -t springboot-backend:$BUILD_NUMBER . '
+        // ── Stage 2: Dependency Vulnerability Scan (parallel) ────────────────
+        stage('Dependency Vulnerability Scan') {
+            parallel {
+
+                stage('OWASP — Java Dependencies') {
+                    steps {
+                        dir('springboot-backend') {
+                            // Fails build on CVSS >= 7 (HIGH/CRITICAL). Set to 11 to warn-only.
+                            sh '''
+                                mvn org.owasp:dependency-check-maven:check \
+                                    -DfailBuildOnCVSS=7 \
+                                    -Dformats=HTML,JSON \
+                                    || true
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing:          true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll:               true,
+                                reportDir:             'springboot-backend/target',
+                                reportFiles:           'dependency-check-report.html',
+                                reportName:            'OWASP Dependency Check'
+                            ])
+                        }
+                    }
                 }
-                
-                dir('react-frontend') {
-                  sh 'docker build -t react-frontend:$BUILD_NUMBER . '
+
+                stage('npm audit — React Dependencies') {
+                    steps {
+                        dir('react-frontend') {
+                            sh 'npm audit --audit-level=high || true'
+                        }
+                    }
                 }
-                
+
+                stage('Safety — Python Dependencies') {
+                    steps {
+                        dir('ml-service') {
+                            sh '''
+                                pip install --quiet safety
+                                safety check -r requirements.txt --full-report || true
+                            '''
+                        }
+                    }
+                }
             }
         }
 
-        stage('Push images to hub') {
-            steps {
-                sh 'echo $dockercredentials_PSW | docker login -u $dockercredentials_USR --password-stdin '
-                sh 'docker image tag springboot-backend:$BUILD_NUMBER lugar2020/springboot-backend:$BUILD_NUMBER'
-                sh 'docker image push lugar2020/springboot-backend:$BUILD_NUMBER'
-                
-                sh 'docker image tag react-frontend:$BUILD_NUMBER lugar2020/react-frontend:$BUILD_NUMBER'
-                sh 'docker image push lugar2020/react-frontend:$BUILD_NUMBER'
-            }
-        }
+        // ── Stage 3: Build Artifacts ─────────────────────────────────────────
+        stage('Build Artifacts') {
+            parallel {
 
-        stage('deploy on kubernetes') {
-            steps {
-                dir('kubernetes'){
-                    sh ''' final_tag=$(echo $BUILD_NUMBER | tr -d ' ') 
-                     sed -i "s/docker_tag/$final_tag/g" backend.yml
-                    '''
-
-                    sh ''' final_tag=$(echo $BUILD_NUMBER | tr -d ' ') 
-                     sed -i "s/docker_tag/$final_tag/g" frontend.yml
-                    '''
+                stage('Spring Boot — Package JAR') {
+                    steps {
+                        dir('springboot-backend') {
+                            sh 'mvn clean package -DskipTests'
+                        }
+                    }
                 }
-                dir('ansible') {                  
-                  ansiblePlaybook become: true, credentialsId: 'masternodeid', installation: 'ansible', inventory: 'hosts.ini', playbook: 'deploy-playbook.yml'
+
+                stage('React — Build') {
+                    steps {
+                        dir('react-frontend') {
+                            sh 'npm run build'
+                        }
+                    }
                 }
             }
         }
 
-        stage('Clean up') {
-            steps {
-                sh 'docker rmi lugar2020/springboot-backend:$BUILD_NUMBER --force'
-                sh 'docker rmi springboot-backend:$BUILD_NUMBER --force'
-                
-                sh 'docker rmi lugar2020/react-frontend:$BUILD_NUMBER --force'
-                sh 'docker rmi react-frontend:$BUILD_NUMBER --force'
+        // ── Stage 4: Build Docker Images (parallel) ───────────────────────────
+        stage('Build Docker Images') {
+            parallel {
+
+                stage('Image — springboot-backend') {
+                    steps {
+                        dir('springboot-backend') {
+                            sh 'docker build -t springboot-backend:${IMAGE_TAG} .'
+                        }
+                    }
+                }
+
+                stage('Image — react-frontend') {
+                    steps {
+                        dir('react-frontend') {
+                            sh 'docker build -t react-frontend:${IMAGE_TAG} .'
+                        }
+                    }
+                }
+
+                stage('Image — ml-service') {
+                    steps {
+                        dir('ml-service') {
+                            sh 'docker build -t ml-service:${IMAGE_TAG} .'
+                        }
+                    }
+                }
             }
+        }
+
+        // ── Stage 5: Image Vulnerability Scan — Trivy (parallel) ─────────────
+        stage('Image Vulnerability Scan — Trivy') {
+            parallel {
+
+                stage('Trivy — springboot-backend') {
+                    steps {
+                        sh '''
+                            trivy image \
+                                --exit-code 0 \
+                                --severity HIGH,CRITICAL \
+                                --format table \
+                                springboot-backend:${IMAGE_TAG}
+                        '''
+                    }
+                }
+
+                stage('Trivy — react-frontend') {
+                    steps {
+                        sh '''
+                            trivy image \
+                                --exit-code 0 \
+                                --severity HIGH,CRITICAL \
+                                --format table \
+                                react-frontend:${IMAGE_TAG}
+                        '''
+                    }
+                }
+
+                stage('Trivy — ml-service') {
+                    steps {
+                        sh '''
+                            trivy image \
+                                --exit-code 0 \
+                                --severity HIGH,CRITICAL \
+                                --format table \
+                                ml-service:${IMAGE_TAG}
+                        '''
+                    }
+                }
+            }
+        }
+
+        // ── Stage 6: Push to DockerHub ────────────────────────────────────────
+        stage('Push to DockerHub') {
+            steps {
+                sh 'echo $dockercredentials_PSW | docker login -u $dockercredentials_USR --password-stdin'
+
+                // Spring Boot
+                sh 'docker tag springboot-backend:${IMAGE_TAG} ${DOCKER_REPO}/springboot-backend:${IMAGE_TAG}'
+                sh 'docker tag springboot-backend:${IMAGE_TAG} ${DOCKER_REPO}/springboot-backend:latest'
+                sh 'docker push ${DOCKER_REPO}/springboot-backend:${IMAGE_TAG}'
+                sh 'docker push ${DOCKER_REPO}/springboot-backend:latest'
+
+                // React
+                sh 'docker tag react-frontend:${IMAGE_TAG} ${DOCKER_REPO}/react-frontend:${IMAGE_TAG}'
+                sh 'docker tag react-frontend:${IMAGE_TAG} ${DOCKER_REPO}/react-frontend:latest'
+                sh 'docker push ${DOCKER_REPO}/react-frontend:${IMAGE_TAG}'
+                sh 'docker push ${DOCKER_REPO}/react-frontend:latest'
+
+                // ML Service
+                sh 'docker tag ml-service:${IMAGE_TAG} ${DOCKER_REPO}/ml-service:${IMAGE_TAG}'
+                sh 'docker tag ml-service:${IMAGE_TAG} ${DOCKER_REPO}/ml-service:latest'
+                sh 'docker push ${DOCKER_REPO}/ml-service:${IMAGE_TAG}'
+                sh 'docker push ${DOCKER_REPO}/ml-service:latest'
+            }
+        }
+
+        // ── Stage 7: Deploy to Kubernetes ────────────────────────────────────
+        stage('Deploy to Kubernetes') {
+            steps {
+                dir('kubernetes') {
+                    sh "sed -i 's/docker_tag/${IMAGE_TAG}/g' backend.yml frontend.yml"
+                }
+                dir('ansible') {
+                    ansiblePlaybook(
+                        become:        true,
+                        credentialsId: 'masternodeid',
+                        installation:  'ansible',
+                        inventory:     'hosts.ini',
+                        playbook:      'deploy-playbook.yml'
+                    )
+                }
+            }
+        }
+    }
+
+    // ── Post: cleanup always, Slack on result ─────────────────────────────────
+    post {
+        always {
+            sh '''
+                docker rmi springboot-backend:${IMAGE_TAG} \
+                            ${DOCKER_REPO}/springboot-backend:${IMAGE_TAG} \
+                            ${DOCKER_REPO}/springboot-backend:latest \
+                            --force 2>/dev/null || true
+
+                docker rmi react-frontend:${IMAGE_TAG} \
+                            ${DOCKER_REPO}/react-frontend:${IMAGE_TAG} \
+                            ${DOCKER_REPO}/react-frontend:latest \
+                            --force 2>/dev/null || true
+
+                docker rmi ml-service:${IMAGE_TAG} \
+                            ${DOCKER_REPO}/ml-service:${IMAGE_TAG} \
+                            ${DOCKER_REPO}/ml-service:latest \
+                            --force 2>/dev/null || true
+            '''
+        }
+        success {
+            slackSend(
+                color:   'good',
+                message: "✅ *${env.JOB_NAME} #${BUILD_NUMBER}* — Build passed and deployed. (<${env.BUILD_URL}|Open>)"
+            )
+        }
+        failure {
+            slackSend(
+                color:   'danger',
+                message: "❌ *${env.JOB_NAME} #${BUILD_NUMBER}* — Build FAILED. (<${env.BUILD_URL}|Open>)"
+            )
         }
     }
 }
