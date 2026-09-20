@@ -157,7 +157,7 @@ public class JenkinsService {
     }
 
     @PostConstruct
-    private void initializeDefaults() {
+    void initializeDefaults() {
         // Load persisted config from DB first; fall back to env/application.properties values
         configRepository.findTopByOrderByIdDesc().ifPresentOrElse(saved -> {
             this.jenkinsUrl      = saved.getUrl();
@@ -374,24 +374,23 @@ public class JenkinsService {
 
     public void pollJenkinsJob() {
         try {
-            log.info("[BACKEND] Polling Jenkins job at: ", jenkinsUrl);
-            // Call Jenkins API for last build info with Basic Auth
+            log.info("[BACKEND] Polling Jenkins job at: {}", jenkinsUrl);
             String apiUrl = jenkinsUrl + "/job/" + jobName + "/lastBuild/api/json";
-            HttpHeaders headers = new HttpHeaders();
-            String auth = jenkinsUser + ":" + jenkinsToken;
-            byte[] encodedAuth = Base64.getEncoder().encode(auth.getBytes(StandardCharsets.UTF_8));
-            String authHeader = "Basic " + new String(encodedAuth);
-            headers.set("Authorization", authHeader);
-            HttpEntity<String> entity = new HttpEntity<>(headers);
-            
-            log.info("[BACKEND] Making request to: ", apiUrl);
+            HttpEntity<String> entity = buildAuthEntity();
+
+            log.info("[BACKEND] Making request to: {}", apiUrl);
             ResponseEntity<Map> response = restTemplate.exchange(apiUrl, HttpMethod.GET, entity, Map.class);
             @SuppressWarnings("unchecked")
             Map<String, Object> buildInfo = (Map<String, Object>) response.getBody();
             if (buildInfo != null) {
-                String status = (String) buildInfo.get("result"); // e.g., "SUCCESS"
-                Long duration = ((Number) buildInfo.get("duration")).longValue() / 1000; // ms to s
-                Long timestampMs = ((Number) buildInfo.get("timestamp")).longValue();
+                String status = (String) buildInfo.get("result");
+                Long durationMs = toLong(buildInfo.get("duration"));
+                Long timestampMs = toLong(buildInfo.get("timestamp"));
+                if (durationMs == null || timestampMs == null) {
+                    log.warn("[BACKEND] Build still in progress or missing fields, skipping");
+                    return;
+                }
+                Long duration = durationMs / 1000;
                 LocalDateTime timestamp = LocalDateTime.ofInstant(Instant.ofEpochMilli(timestampMs), ZoneId.systemDefault());
 
                 // After saving, get all durations for this job
@@ -453,8 +452,14 @@ public class JenkinsService {
                         Map<String, Object> buildInfo = (Map<String, Object>) buildResp.getBody();
                         if (buildInfo != null) {
                             String status = (String) buildInfo.get("result");
-                            Long duration = ((Number) buildInfo.get("duration")).longValue() / 1000;
-                            Long timestampMs = ((Number) buildInfo.get("timestamp")).longValue();
+                            Long durationMs = toLong(buildInfo.get("duration"));
+                            Long timestampMs = toLong(buildInfo.get("timestamp"));
+                            if (durationMs == null || timestampMs == null) {
+                                log.warn("[JENKINS] Skipping in-progress build for job {}", name);
+                                result.add(new JenkinsJob(name, "IN_PROGRESS", LocalDateTime.now(), 0L));
+                                continue;
+                            }
+                            Long duration = durationMs / 1000;
                             LocalDateTime timestamp = LocalDateTime.ofInstant(Instant.ofEpochMilli(timestampMs), ZoneId.systemDefault());
                             result.add(new JenkinsJob(name, status, timestamp, duration));
                             log.info("[JENKINS] Added job: {} status={}", name, status);
