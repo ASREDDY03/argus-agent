@@ -11,6 +11,11 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       timeout: 20s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: "512Mi"
+          cpus: "0.5"
     networks:
       - devopsnet
 
