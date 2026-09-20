@@ -7,4 +7,4 @@ COPY app.py .
 RUN adduser --system --group appuser
 USER appuser
 EXPOSE 8000
-CMD ["python", "app.py"]
+CMD ["gunicorn", "--workers", "2", "--bind", "0.0.0.0:8000", "app:app"]

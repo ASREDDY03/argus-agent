@@ -21,7 +21,7 @@ import java.util.Map;
 import java.util.HashMap;
 
 @RestController
-@CrossOrigin(originPatterns = "*")
+@CrossOrigin(originPatterns = {"http://localhost:3000", "https://localhost"})
 public class JenkinsController {
     private final JenkinsService jenkinsService;
     private final JenkinsPoller jenkinsPoller;
