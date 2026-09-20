@@ -235,8 +235,12 @@ def health():
     })
 
 
+# Run DB init and NLTK download at import time so gunicorn workers pick it up
+nltk.download('punkt', quiet=True)
+nltk.download('punkt_tab', quiet=True)
+init_db()
+print(f"[ML] DB: {DB_PATH}")
+
 if __name__ == '__main__':
-    nltk.download('punkt', quiet=True)
-    init_db()
-    print(f"[ML] DB: {DB_PATH}")
+    # For local development only. Production uses gunicorn (see Dockerfile CMD).
     app.run(host='0.0.0.0', port=8000)

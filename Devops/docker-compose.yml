@@ -18,8 +18,7 @@ services:
     build:
       context: ./springboot-backend
     container_name: springboot-backend
-    ports:
-      - "8020:8020"
+    # Port 8020 is only needed internally via nginx; do not expose to the host
     environment:
       - SPRING_DATASOURCE_URL=jdbc:mysql://mysqldbs:3306/${MYSQL_DATABASE}
       - SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME}
@@ -44,8 +43,7 @@ services:
     build:
       context: ./ml-service
     container_name: ml-service
-    ports:
-      - "8000:8000"
+    # Port 8000 is only needed internally via nginx; do not expose to the host
     volumes:
       - ml-data:/data
     networks:
@@ -75,7 +73,7 @@ services:
       - devopsnet
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.53.0
     container_name: prometheus
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
@@ -88,7 +86,7 @@ services:
       - devopsnet
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.2.0
     container_name: grafana
     ports:
       - "3001:3000"
@@ -106,7 +104,7 @@ services:
       - devopsnet
 
   alertmanager:
-    image: prom/alertmanager
+    image: prom/alertmanager:v0.27.0
     container_name: alertmanager
     ports:
       - "9093:9093"

@@ -211,8 +211,9 @@ public class JenkinsService {
             result.put("jobCount", jobs.size());
             result.put("jobs", jobs);
         } catch (Exception e) {
+            log.warn("[CONFIG] Failed to update Jenkins configuration: {}", e.getMessage());
             result.put("status", "error");
-            result.put("message", "Failed to update Jenkins configuration: " + e.getMessage());
+            result.put("message", "Failed to update Jenkins configuration. Check server logs for details.");
             result.put("jobCount", 0);
         }
         return result;
@@ -549,8 +550,9 @@ public class JenkinsService {
             result.put("message", "Jenkins polling completed successfully");
             result.put("jobs", jobs);
         } catch (Exception e) {
+            log.warn("[POLL] Jenkins polling failed: {}", e.getMessage());
             result.put("status", "error");
-            result.put("message", "Jenkins polling failed: " + e.getMessage());
+            result.put("message", "Jenkins polling failed. Check server logs for details.");
             result.put("jobs", java.util.Collections.emptyList());
         }
         return result;
@@ -586,8 +588,9 @@ public class JenkinsService {
             result.put("status", "success");
             result.put("message", "Build triggered for job: " + jobName);
         } catch (Exception e) {
+            log.warn("[BUILD] Failed to trigger build for job={}: {}", jobName, e.getMessage());
             result.put("status", "error");
-            result.put("message", "Failed to trigger build: " + e.getMessage());
+            result.put("message", "Failed to trigger build. Check server logs for details.");
         }
         return result;
     }
@@ -623,10 +626,9 @@ public class JenkinsService {
             result.put("rawJobs", jobs);
             
         } catch (Exception e) {
+            log.warn("[DEBUG] Jenkins connection test failed: {}", e.getMessage());
             result.put("connectionStatus", "FAILED");
-            result.put("error", e.getMessage());
-            result.put("errorType", e.getClass().getSimpleName());
-            e.printStackTrace();
+            result.put("error", e.getClass().getSimpleName());
         }
         return result;
     }
@@ -676,6 +678,7 @@ public class JenkinsService {
         boolean anomaly = false;
         boolean isFailure = false;
         String insight = "Normal";
+        int streak = 0;
 
         if (!jobs.isEmpty()) {
             JenkinsJob latest = jobs.get(jobs.size() - 1);
