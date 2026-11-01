@@ -88,7 +88,7 @@ public class JenkinsService {
     private final Map<String, Long> lastAlertTime = new ConcurrentHashMap<>();
 
     // Latest insights per job — populated by background monitor, merged into WebSocket broadcasts
-    private final Map<String, Map<String, Object>> insightsCache = new ConcurrentHashMap<>();
+    private final Map<String, JobInsightsResponse> insightsCache = new ConcurrentHashMap<>();
 
     // ── ML service circuit breaker ────────────────────────────────────────────
     // Opens after ML_CB_THRESHOLD consecutive failures; resets after ML_CB_RESET_MS.
@@ -519,20 +519,16 @@ public class JenkinsService {
             }
             // Merge cached anomaly/risk/streak data so every broadcast carries insights
             for (JenkinsJob job : result) {
-                Map<String, Object> cached = insightsCache.get(job.getJobName());
+                JobInsightsResponse cached = insightsCache.get(job.getJobName());
                 if (cached != null) {
-                    job.setAnomaly(Boolean.TRUE.equals(cached.get("anomaly")));
-                    job.setRiskLevel((String) cached.get("riskLevel"));
-                    Object fp = cached.get("failureProbability");
-                    if (fp instanceof Number) job.setFailureProbability(((Number) fp).doubleValue());
-                    Object fs = cached.get("flakinessScore");
-                    if (fs instanceof Number) job.setFlakinessScore(((Number) fs).doubleValue());
-                    job.setFlaky(Boolean.TRUE.equals(cached.get("flaky")));
-                    Object cf = cached.get("consecutiveFailures");
-                    if (cf instanceof Number) job.setConsecutiveFailures(((Number) cf).intValue());
-                    job.setSlaBreach(Boolean.TRUE.equals(cached.get("slaBreach")));
-                    Object hs = cached.get("healthScore");
-                    if (hs instanceof Number) job.setHealthScore(((Number) hs).intValue());
+                    job.setAnomaly(cached.anomaly());
+                    job.setRiskLevel(cached.riskLevel());
+                    job.setFailureProbability(cached.failureProbability());
+                    job.setFlakinessScore(cached.flakinessScore());
+                    job.setFlaky(cached.flaky());
+                    job.setConsecutiveFailures(cached.consecutiveFailures());
+                    job.setSlaBreach(cached.slaBreach());
+                    job.setHealthScore(cached.healthScore());
                 }
             }
 
@@ -575,10 +571,10 @@ public class JenkinsService {
         }
         for (JenkinsJob job : jobs) {
             try {
-                Map<String, Object> insights = getJobInsights(job.getJobName());
+                JobInsightsResponse insights = getJobInsights(job.getJobName());
                 insightsCache.put(job.getJobName(), insights);
                 log.debug("[MONITOR] Cached insights for job={} anomaly={} risk={}",
-                    job.getJobName(), insights.get("anomaly"), insights.get("riskLevel"));
+                    job.getJobName(), insights.anomaly(), insights.riskLevel());
             } catch (Exception e) {
                 log.warn("[MONITOR] Insight check failed for job={}: {}", job.getJobName(), e.getMessage());
             }
