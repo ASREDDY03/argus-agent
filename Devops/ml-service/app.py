@@ -300,6 +300,8 @@ _LOG_PATTERNS = [
     ('DockerError',      r'[Dd]ocker.*[Ee]rror|container.*exited [1-9]|image.*not found'),
 ]
 
+MAX_LOG_BYTES = 5 * 1024 * 1024  # 5 MB
+
 @app.route('/analyze-logs', methods=['POST'])
 def analyze_logs():
     data = request.get_json(silent=True)
@@ -308,6 +310,8 @@ def analyze_logs():
     logs = data.get('logs', '')
     if not logs:
         return jsonify({'root_causes': []})
+    if len(logs.encode('utf-8')) > MAX_LOG_BYTES:
+        return jsonify({'error': 'Log payload exceeds 5 MB limit'}), 413
 
     error_lines = [
         line for line in logs.split('\n')
