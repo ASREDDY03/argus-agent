@@ -518,14 +518,31 @@ class JenkinsDashboardComponent extends Component {
                 triggeringJob, triggerMsg, trendsData, loadingTrends, wsConnected,
                 alerts, loadingAlerts } = this.state;
 
-        const filtered = jobs.filter(j =>
-            !search || j.jobName.toLowerCase().includes(search.toLowerCase())
-        );
-        const maxDur  = Math.max(...jobs.map(j => j.duration || 0), 1);
+        // Memoize filtered list — only recompute when jobs array or search term changes.
+        // Class-component equivalent of useMemo([jobs, search]).
+        if (this._filteredDeps?.[0] !== jobs || this._filteredDeps?.[1] !== search) {
+            this._filtered = jobs.filter(j =>
+                !search || j.jobName.toLowerCase().includes(search.toLowerCase())
+            );
+            this._filteredDeps = [jobs, search];
+        }
+        const filtered = this._filtered;
+
+        // Memoize job stats — only recompute when the jobs array reference changes.
+        if (this._statsDep !== jobs) {
+            this._maxDur  = Math.max(...jobs.map(j => j.duration || 0), 1);
+            this._success = jobs.filter(j => j.status === 'SUCCESS').length;
+            this._failed  = jobs.filter(j => j.status === 'FAILURE').length;
+            this._avgDur  = jobs.length
+                ? Math.round(jobs.reduce((a, j) => a + (j.duration || 0), 0) / jobs.length)
+                : 0;
+            this._statsDep = jobs;
+        }
+        const maxDur  = this._maxDur;
         const total   = jobs.length;
-        const success = jobs.filter(j => j.status === 'SUCCESS').length;
-        const failed  = jobs.filter(j => j.status === 'FAILURE').length;
-        const avgDur  = jobs.length ? Math.round(jobs.reduce((a, j) => a + (j.duration || 0), 0) / jobs.length) : 0;
+        const success = this._success;
+        const failed  = this._failed;
+        const avgDur  = this._avgDur;
 
         const drawerTrends = jobDetails ? computeTrends(jobDetails.history || []) : null;
 
