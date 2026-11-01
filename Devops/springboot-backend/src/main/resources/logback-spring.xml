@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Structured JSON logging via logstash-logback-encoder.
+  Active for all Spring profiles; JSON is easier to ingest into ELK / CloudWatch / Loki.
+  Each log line is a self-contained JSON object:
+    {"@timestamp":"…","level":"INFO","logger":"…","message":"…","jobName":"…", …}
+-->
+<configuration>
+
+  <!-- ── JSON appender (stdout → Docker log driver picks it up) ──────────── -->
+  <appender name="JSON_STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <!-- Include MDC fields (e.g. traceId, jobName if set via MDC) -->
+      <includeMdcKeyName>jobName</includeMdcKeyName>
+      <includeMdcKeyName>traceId</includeMdcKeyName>
+      <!-- Shorten logger names to keep lines compact -->
+      <shortenedLoggerNameLength>36</shortenedLoggerNameLength>
+    </encoder>
+  </appender>
+
+  <!-- ── Root logger ──────────────────────────────────────────────────────── -->
+  <root level="INFO">
+    <appender-ref ref="JSON_STDOUT" />
+  </root>
+
+  <!-- Keep Spring Boot's own infrastructure quieter -->
+  <logger name="org.springframework" level="WARN" />
+  <logger name="com.example.crudspring" level="INFO" />
+
+</configuration>

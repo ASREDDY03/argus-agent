@@ -8,12 +8,17 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.cache.caffeine.CaffeineCacheManager;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import org.springframework.context.annotation.Bean;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import java.util.concurrent.TimeUnit;
 
 @SpringBootApplication
 @EnableScheduling
+@EnableCaching
 public class CrudSpringApplication implements CommandLineRunner {
 
     @Autowired
@@ -34,6 +39,16 @@ public class CrudSpringApplication implements CommandLineRunner {
 
         employeService.createEmployee(employe);
         employeService.createEmployee(employe1);
+    }
+
+    /** Caffeine-backed cache — 30 s TTL, max 200 entries per cache. */
+    @Bean
+    public CaffeineCacheManager cacheManager() {
+        CaffeineCacheManager mgr = new CaffeineCacheManager("jobInsights");
+        mgr.setCaffeine(Caffeine.newBuilder()
+                .expireAfterWrite(30, TimeUnit.SECONDS)
+                .maximumSize(200));
+        return mgr;
     }
 
     @Bean

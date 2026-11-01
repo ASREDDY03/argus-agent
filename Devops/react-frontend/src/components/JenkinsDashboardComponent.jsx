@@ -27,6 +27,8 @@ class JenkinsDashboardComponent extends Component {
             demoMode: false,
             activeTab: 'jobs',
             search: '',
+            statusFilter: 'all',   // 'all' | 'SUCCESS' | 'FAILURE' | 'anomaly'
+            darkMode: localStorage.getItem('argus-dark-mode') === 'true',
             triggeringJob: null,
             triggerMsg: null,
             trendsData: {},       // jobName → { history, trends }
@@ -50,6 +52,7 @@ class JenkinsDashboardComponent extends Component {
         this.updateJenkinsConfig = this.updateJenkinsConfig.bind(this);
         this.handleConfigChange  = this.handleConfigChange.bind(this);
         this.toggleDemoMode      = this.toggleDemoMode.bind(this);
+        this.toggleDarkMode      = this.toggleDarkMode.bind(this);
         this.closeDrawer         = this.closeDrawer.bind(this);
         this.triggerBuild        = this.triggerBuild.bind(this);
         this.loadTrendsTab       = this.loadTrendsTab.bind(this);
@@ -199,6 +202,12 @@ class JenkinsDashboardComponent extends Component {
         });
     }
 
+    toggleDarkMode() {
+        const next = !this.state.darkMode;
+        localStorage.setItem('argus-dark-mode', String(next));
+        this.setState({ darkMode: next });
+    }
+
     handleConfigChange(field, value) {
         this.setState({ jenkinsConfig: { ...this.state.jenkinsConfig, [field]: value } });
     }
@@ -231,17 +240,21 @@ class JenkinsDashboardComponent extends Component {
 
     render() {
         const { jobs, loading, error, jobDetails, jobSummary, jobStages, selectedJob, showDetails,
-                showConfig, demoMode, activeTab, search, jenkinsConfig,
+                showConfig, demoMode, activeTab, search, statusFilter, darkMode, jenkinsConfig,
                 triggeringJob, triggerMsg, trendsData, loadingTrends, wsConnected,
                 alerts, loadingAlerts } = this.state;
 
-        // Memoize filtered list — only recompute when jobs array or search term changes.
-        // Class-component equivalent of useMemo([jobs, search]).
-        if (this._filteredDeps?.[0] !== jobs || this._filteredDeps?.[1] !== search) {
-            this._filtered = jobs.filter(j =>
-                !search || j.jobName.toLowerCase().includes(search.toLowerCase())
-            );
-            this._filteredDeps = [jobs, search];
+        // Memoize filtered list — recompute when jobs, search, or statusFilter changes.
+        if (this._filteredDeps?.[0] !== jobs || this._filteredDeps?.[1] !== search
+                || this._filteredDeps?.[2] !== statusFilter) {
+            this._filtered = jobs.filter(j => {
+                const matchesSearch = !search || j.jobName.toLowerCase().includes(search.toLowerCase());
+                const matchesStatus = statusFilter === 'all'
+                    || (statusFilter === 'anomaly' ? j.anomaly
+                        : j.status === statusFilter);
+                return matchesSearch && matchesStatus;
+            });
+            this._filteredDeps = [jobs, search, statusFilter];
         }
         const filtered = this._filtered;
 
@@ -262,7 +275,7 @@ class JenkinsDashboardComponent extends Component {
         const avgDur  = this._avgDur;
 
         return (
-            <div className="argus-root">
+            <div className="argus-root" data-theme={darkMode ? 'dark' : 'light'}>
 
                 {/* ── Top bar ── */}
                 <header className="argus-topbar">
@@ -284,6 +297,14 @@ class JenkinsDashboardComponent extends Component {
                     <div className="topbar-spacer" />
 
                     <div className="topbar-actions">
+                        <button
+                            className="btn btn-ghost btn-icon"
+                            onClick={this.toggleDarkMode}
+                            title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                            aria-label="Toggle dark mode"
+                        >
+                            {darkMode ? '☀' : '☾'}
+                        </button>
                         <button
                             className={`btn ${demoMode ? 'btn-ghost-active' : 'btn-ghost'}`}
                             onClick={this.toggleDemoMode}
@@ -431,6 +452,22 @@ class JenkinsDashboardComponent extends Component {
                                     value={search}
                                     onChange={e => this.setState({ search: e.target.value })}
                                 />
+                                <div className="filter-pills">
+                                    {[
+                                        { key: 'all',     label: 'All' },
+                                        { key: 'SUCCESS', label: 'Passing' },
+                                        { key: 'FAILURE', label: 'Failing' },
+                                        { key: 'anomaly', label: 'Anomaly' },
+                                    ].map(({ key, label }) => (
+                                        <button
+                                            key={key}
+                                            className={`filter-pill${statusFilter === key ? ' active' : ''}`}
+                                            onClick={() => this.setState({ statusFilter: key })}
+                                        >
+                                            {label}
+                                        </button>
+                                    ))}
+                                </div>
                                 <div style={{ flex: 1 }} />
                                 <button className="btn btn-ghost btn-sm" onClick={this.testConnection} disabled={loading}>
                                     ⬡ Test Connection

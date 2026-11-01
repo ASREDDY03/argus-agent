@@ -1,0 +1,41 @@
+groups:
+  # Precomputed rates and averages — avoids expensive ad-hoc range queries in
+  # Grafana panels and alert expressions. Recording rules run on every
+  # evaluation interval (15 s) and store results as new metric series.
+  - name: argus-recording-rules
+    interval: 15s
+    rules:
+
+      # ── Build success rate (5-min window) ──────────────────────────────────
+      # job:jenkins_success_rate:5m — fraction of successful builds per job
+      - record: job:jenkins_success_rate:5m
+        expr: |
+          avg_over_time(jenkins_job_status[5m])
+
+      # ── Average build duration (10-min window) ─────────────────────────────
+      # job:jenkins_avg_duration:10m — smoothed duration per job
+      - record: job:jenkins_avg_duration:10m
+        expr: |
+          avg_over_time(jenkins_job_duration_seconds[10m])
+
+      # ── Anomaly rate (5-min window) ────────────────────────────────────────
+      # job:jenkins_anomaly_rate:5m — fraction of builds flagged as anomalous
+      - record: job:jenkins_anomaly_rate:5m
+        expr: |
+          avg_over_time(jenkins_job_anomaly[5m])
+
+      # ── Request rate on the Spring Boot backend (1-min window) ────────────
+      # instance:backend_http_rate:1m — total HTTP requests/s across all endpoints
+      - record: instance:backend_http_rate:1m
+        expr: |
+          sum(rate(http_server_requests_seconds_count{job="springboot-backend"}[1m]))
+            by (instance)
+
+      # ── 95th-percentile response latency (5-min window) ───────────────────
+      # instance:backend_p95_latency:5m — p95 across all endpoints per instance
+      - record: instance:backend_p95_latency:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_server_requests_seconds_bucket{job="springboot-backend"}[5m]))
+              by (le, instance)
+          )

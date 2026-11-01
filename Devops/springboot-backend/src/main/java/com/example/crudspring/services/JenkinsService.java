@@ -36,6 +36,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.web.util.UriComponentsBuilder;
 
 @Service
@@ -557,6 +559,10 @@ public class JenkinsService {
         return sb.toString();
     }
 
+    /** Evicts the cached insights for one job so the next call re-runs the ML pipeline. */
+    @CacheEvict(value = "jobInsights", key = "#jobName")
+    public void evictInsightsCache(String jobName) { /* eviction side-effect only */ }
+
     /**
      * Called by the background monitor. Runs getJobInsights() for every known job
      * and caches the result so it's baked into the next WebSocket broadcast.
@@ -571,6 +577,7 @@ public class JenkinsService {
         }
         for (JenkinsJob job : jobs) {
             try {
+                evictInsightsCache(job.getJobName());          // force fresh ML call
                 JobInsightsResponse insights = getJobInsights(job.getJobName());
                 insightsCache.put(job.getJobName(), insights);
                 log.debug("[MONITOR] Cached insights for job={} anomaly={} risk={}",
@@ -706,6 +713,12 @@ public class JenkinsService {
         return history;
     }
 
+    /**
+     * Full ML + alert pipeline for one job. Results are cached for 30 s so that
+     * rapid UI refreshes don't flood the ML service — background monitor calls
+     * evict the cache entry when it finishes a fresh poll cycle.
+     */
+    @Cacheable(value = "jobInsights", key = "#jobName")
     public JobInsightsResponse getJobInsights(String jobName) {
         log.info("[JENKINS] Fetching job insights for: {}", jobName);
         List<JenkinsJob> jobs = getJobBuildHistory(jobName);
