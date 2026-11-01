@@ -47,12 +47,11 @@ pipeline {
                     }
                 }
 
-                stage('ML Service — Syntax & Import Check') {
+                stage('ML Service — Tests') {
                     steps {
                         dir('ml-service') {
-                            sh 'pip install --quiet -r requirements.txt'
-                            sh 'python -m py_compile app.py && echo "Syntax OK"'
-                            sh 'python -m pytest tests/ -v 2>/dev/null || echo "[INFO] No test suite yet — syntax check passed"'
+                            sh 'pip install --quiet -r requirements.txt -r requirements-dev.txt'
+                            sh 'python -m pytest tests/ -v --tb=short --cov=app --cov-report=term-missing'
                         }
                     }
                 }
