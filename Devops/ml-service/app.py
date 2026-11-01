@@ -19,6 +19,9 @@ DB_PATH = os.path.join(DATA_DIR, 'argus_ml.db')
 # ── In-memory model caches ────────────────────────────────────────────────────
 _rf_cache: dict = {}
 _if_cache: dict = {}
+# Tracks how many samples each IF/RF model was last trained on — used to detect new data
+_if_trained_on: dict = {}
+_rf_trained_on: dict = {}
 
 # ── SQLite persistence ────────────────────────────────────────────────────────
 
@@ -33,11 +36,9 @@ def init_db():
             ts        DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # Unique index makes INSERT OR IGNORE actually deduplicate rows
-    conn.execute('''
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_build
-        ON build_history (job_name, duration, status)
-    ''')
+    # Drop the old value-based unique index that incorrectly collapsed distinct builds
+    # sharing the same duration+status (e.g. ten 120s SUCCESS builds → stored as one).
+    conn.execute('DROP INDEX IF EXISTS uq_build')
     conn.commit()
     conn.close()
 
@@ -46,7 +47,7 @@ def save_builds(job_name, durations, statuses):
     for d, s in zip(durations, statuses):
         status_int = 1 if str(s).upper() == 'SUCCESS' else 0
         conn.execute(
-            'INSERT OR IGNORE INTO build_history (job_name, duration, status) VALUES (?, ?, ?)',
+            'INSERT INTO build_history (job_name, duration, status) VALUES (?, ?, ?)',
             (job_name, float(d), status_int)
         )
     conn.commit()
@@ -118,17 +119,19 @@ def save_rf_model(job_name, model):
     with open(_rf_model_path(job_name), 'wb') as f:
         pickle.dump(model, f)
 
-def get_or_train_if_model(job_name, durations):
+def get_or_train_if_model(job_name):
+    # save_builds was already called before this — DB is the authoritative source.
+    all_durations = load_job_durations(job_name)
+    n = len(all_durations)
     model = load_if_model(job_name)
-    persisted = load_job_durations(job_name)
-    combined = list(set(persisted + list(durations)))
 
-    if model is None or len(combined) > len(persisted):
-        X = np.array(combined).reshape(-1, 1)
+    if model is None or n > _if_trained_on.get(job_name, 0):
+        X = np.array(all_durations).reshape(-1, 1)
         model = IsolationForest(contamination=0.1, random_state=42)
         model.fit(X)
         save_if_model(job_name, model)
-        print(f"[ML] IF model retrained for {job_name} on {len(combined)} samples")
+        _if_trained_on[job_name] = n
+        print(f"[ML] IF model retrained for {job_name} on {n} samples")
 
     return model
 
@@ -158,7 +161,7 @@ def analyze():
         save_builds(job_name, durations, statuses)
 
         # Per-job IF model for detection
-        model = get_or_train_if_model(job_name, durations)
+        model = get_or_train_if_model(job_name)
         preds = model.predict(durations.reshape(-1, 1))
         for i, pred in enumerate(preds):
             if pred == -1:
@@ -190,12 +193,15 @@ def predict_failure():
     X = df[['duration']]
     y = df['status']
 
-    # Only train when no saved model exists — don't throw away the warm model
+    # Retrain whenever we have more data than the last training run
+    n = len(history)
     clf = load_rf_model(job_name)
-    if clf is None:
+    if clf is None or n > _rf_trained_on.get(job_name, 0):
         clf = RandomForestClassifier(n_estimators=10, random_state=42)
         clf.fit(X, y)
         save_rf_model(job_name, clf)
+        _rf_trained_on[job_name] = n
+        print(f"[ML] RF model retrained for {job_name} on {n} samples")
 
     # Use the most recent build duration (history is ordered DESC)
     next_duration = df['duration'].iloc[0]
@@ -235,8 +241,10 @@ def health():
     })
 
 
+# Init runs at import time so gunicorn workers also initialize the DB
+nltk.download('punkt', quiet=True)
+init_db()
+print(f"[ML] DB: {DB_PATH}")
+
 if __name__ == '__main__':
-    nltk.download('punkt', quiet=True)
-    init_db()
-    print(f"[ML] DB: {DB_PATH}")
     app.run(host='0.0.0.0', port=8000)
