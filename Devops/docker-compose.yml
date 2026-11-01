@@ -38,6 +38,12 @@ services:
       - JENKINS_TOKEN=${JENKINS_TOKEN}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8020/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
     depends_on:
       mysqldbs:
         condition: service_healthy
@@ -78,6 +84,12 @@ services:
       context: ./react-frontend
     container_name: react-frontend
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     deploy:
       resources:
         limits:
@@ -96,10 +108,19 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./certs:/etc/nginx/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
-      - react-frontend
-      - springboot-backend
-      - ml-service
+      react-frontend:
+        condition: service_healthy
+      springboot-backend:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -116,8 +137,15 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - ./alert.rules.yml:/etc/prometheus/alert.rules.yml
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     depends_on:
-      - springboot-backend
+      springboot-backend:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -140,8 +168,15 @@ services:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./grafana/dashboards:/var/lib/grafana/dashboards
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -159,6 +194,12 @@ services:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9093/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--config.expand-env=true'
