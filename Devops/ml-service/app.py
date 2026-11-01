@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from prometheus_flask_exporter import PrometheusMetrics
 import numpy as np
 import pandas as pd
 import re
@@ -8,6 +9,7 @@ import pickle
 import os
 
 app = Flask(__name__)
+metrics = PrometheusMetrics(app)
 
 DATA_DIR = os.environ.get('ML_DATA_DIR', '/data')
 os.makedirs(DATA_DIR, exist_ok=True)
