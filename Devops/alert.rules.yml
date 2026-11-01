@@ -16,5 +16,43 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Jenkins job anomaly"
-          description: "Anomaly detected for job {{ $labels.job }}." 
+          summary: "Jenkins job anomaly detected"
+          description: "ML anomaly detected for job {{ $labels.job }}."
+
+      - alert: JenkinsSustainedFailure
+        expr: jenkins_job_status == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Jenkins job failing for 10+ minutes"
+          description: "Job {{ $labels.job }} has been in a FAILURE state for over 10 minutes — likely multiple consecutive failures."
+
+      - alert: JenkinsSlaBreach
+        expr: jenkins_job_duration_seconds > 600
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Jenkins job exceeded 10-minute SLA"
+          description: "Job {{ $labels.job }} took {{ $value }}s, exceeding the 600s SLA threshold."
+
+  - name: infrastructure-alerts
+    rules:
+      - alert: BackendDown
+        expr: up{job="springboot-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Argus backend is unreachable"
+          description: "Prometheus cannot scrape the Spring Boot backend at springboot-backend:8020. The service may be down."
+
+      - alert: JenkinsUnreachable
+        expr: up{job="jenkins"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Jenkins is unreachable"
+          description: "Prometheus cannot reach the Jenkins metrics endpoint. Build polling will be degraded."

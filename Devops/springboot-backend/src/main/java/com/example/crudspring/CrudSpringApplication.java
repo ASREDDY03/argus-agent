@@ -3,6 +3,7 @@ package com.example.crudspring;
 import com.example.crudspring.models.Employe;
 import com.example.crudspring.services.EmployeService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -17,6 +18,9 @@ public class CrudSpringApplication implements CommandLineRunner {
 
     @Autowired
     private EmployeService employeService;
+
+    @Value("${cors.allowed.origins:http://localhost:3000}")
+    private String corsAllowedOrigins;
 
     public static void main(String[] args) {
         SpringApplication.run(CrudSpringApplication.class, args);
@@ -34,11 +38,12 @@ public class CrudSpringApplication implements CommandLineRunner {
 
     @Bean
     public WebMvcConfigurer corsConfigurer() {
+        String[] origins = corsAllowedOrigins.split(",");
         return new WebMvcConfigurer() {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
                 registry.addMapping("/**")
-                        .allowedOrigins("http://localhost:3000")
+                        .allowedOriginPatterns(origins)
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                         .allowedHeaders("*")
                         .allowCredentials(true);
