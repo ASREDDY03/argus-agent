@@ -43,15 +43,6 @@ public class SlackAlertService {
             ":warning: *Anomaly Detected — %s*\nDuration: %ds (unusually high)\n>%s", jobName, durationSeconds, insight)));
     }
 
-    public void sendSlaBreachAlert(String webhookUrl, String jobName, long durationSeconds, long slaSeconds) {
-        if (!isConfigured(webhookUrl)) return;
-        String text = String.format(
-            ":stopwatch: *SLA Breach — %s*\nBuild took %ds — exceeded threshold of %ds.",
-            jobName, durationSeconds, slaSeconds
-        );
-        post(webhookUrl, buildPayload("#9333ea", text));
-    }
-
     public void sendRecoveryAlert(String webhookUrl, String jobName, long durationSeconds) {
         String text = String.format("Build Recovered — %s | Duration: %ds", jobName, durationSeconds);
         persist(jobName, "RECOVERY", text);
