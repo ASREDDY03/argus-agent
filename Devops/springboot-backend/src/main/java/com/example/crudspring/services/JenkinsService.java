@@ -398,19 +398,26 @@ public class JenkinsService {
                 List<Long> durations = jobs.stream().map(JenkinsJob::getDuration).collect(Collectors.toList());
 
                 // Call ML microservice
+                List<String> statuses = jobs.stream()
+                    .map(j -> j.getStatus() != null ? j.getStatus() : "UNKNOWN")
+                    .collect(Collectors.toList());
                 Map<String, Object> request = new HashMap<>();
+                request.put("job_name", jobName);
                 request.put("durations", durations);
+                request.put("statuses", statuses);
+                request.put("latest_status", status != null ? status : "UNKNOWN");
+                request.put("latest_duration", duration);
                 HttpHeaders mlHeaders = new HttpHeaders();
                 mlHeaders.setContentType(MediaType.APPLICATION_JSON);
                 HttpEntity<Map<String, Object>> mlEntity = new HttpEntity<>(request, mlHeaders);
                 boolean anomalyDetected = false;
                 try {
-                    log.info("[BACKEND] Calling ML service at: ", mlServiceUrl);
+                    log.info("[BACKEND] Calling ML service at: {}", mlServiceUrl);
                     ResponseEntity<Map> mlResponse = restTemplate.postForEntity(mlServiceUrl, mlEntity, Map.class);
                     @SuppressWarnings("unchecked")
                     Map<String, Object> mlBody = (Map<String, Object>) mlResponse.getBody();
                     Object anomalies = mlBody.get("anomalies");
-                    log.info("[BACKEND] ML service response: ", anomalies);
+                    log.info("[BACKEND] ML service response: {}", anomalies);
                     if (anomalies instanceof List && !((List<?>) anomalies).isEmpty()) {
                         anomalyDetected = true;
                         log.info("[BACKEND] Anomaly detected by ML service!");
@@ -699,6 +706,7 @@ public class JenkinsService {
             // ML anomaly detection
             try {
                 Map<String, Object> request = new HashMap<>();
+                request.put("job_name", jobName);
                 request.put("durations", jobs.stream().map(JenkinsJob::getDuration).collect(Collectors.toList()));
                 request.put("statuses", jobs.stream().map(JenkinsJob::getStatus).collect(Collectors.toList()));
                 request.put("latest_status", currentStatus);
@@ -780,6 +788,7 @@ public class JenkinsService {
                     return entry;
                 }).collect(Collectors.toList());
                 Map<String, Object> predictRequest = new HashMap<>();
+                predictRequest.put("job_name", jobName);
                 predictRequest.put("history", historyPayload);
                 HttpHeaders mlHeaders = new HttpHeaders();
                 mlHeaders.setContentType(MediaType.APPLICATION_JSON);
