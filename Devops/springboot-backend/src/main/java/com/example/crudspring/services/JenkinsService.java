@@ -590,6 +590,10 @@ public class JenkinsService {
         meterRegistry.gauge("jenkins_job_status", Tags.of("job", jobName), statusValue);
         meterRegistry.gauge("jenkins_job_duration_seconds", Tags.of("job", jobName), durationSeconds);
         meterRegistry.gauge("jenkins_job_anomaly", Tags.of("job", jobName), anomalyDetected ? 1 : 0);
+        // Publish the configured SLA threshold so Prometheus can compare it against duration.
+        // Value is 0 when SLA is disabled — the alert rule guards on sla > 0 so it won't fire.
+        long slaThreshold = (slaDurationSeconds != null && slaDurationSeconds > 0) ? slaDurationSeconds : 0L;
+        meterRegistry.gauge("jenkins_job_sla_seconds", Tags.of("job", jobName), slaThreshold);
     }
     
     // Method to manually trigger polling for frontend
