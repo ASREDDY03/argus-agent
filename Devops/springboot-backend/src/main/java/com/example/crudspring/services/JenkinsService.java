@@ -26,6 +26,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
@@ -84,6 +85,36 @@ public class JenkinsService {
 
     // Latest insights per job — populated by background monitor, merged into WebSocket broadcasts
     private final Map<String, Map<String, Object>> insightsCache = new ConcurrentHashMap<>();
+
+    // ── ML service circuit breaker ────────────────────────────────────────────
+    // Opens after ML_CB_THRESHOLD consecutive failures; resets after ML_CB_RESET_MS.
+    private static final int  ML_CB_THRESHOLD = 3;
+    private static final long ML_CB_RESET_MS  = 30_000L; // 30 s half-open probe window
+    private final AtomicInteger mlFailureCount = new AtomicInteger(0);
+    private volatile long mlCircuitOpenedAt = 0L;
+
+    /** Returns true if the circuit is OPEN and calls should be skipped. */
+    private boolean mlCircuitOpen() {
+        if (mlFailureCount.get() < ML_CB_THRESHOLD) return false;
+        if (System.currentTimeMillis() - mlCircuitOpenedAt > ML_CB_RESET_MS) {
+            mlFailureCount.set(0); // enter HALF-OPEN: allow one probe
+            return false;
+        }
+        return true;
+    }
+
+    private void mlCallSucceeded() {
+        if (mlFailureCount.getAndSet(0) >= ML_CB_THRESHOLD) {
+            log.info("[ML-CB] Circuit closed — ML service recovered");
+        }
+    }
+
+    private void mlCallFailed() {
+        if (mlFailureCount.incrementAndGet() == ML_CB_THRESHOLD) {
+            mlCircuitOpenedAt = System.currentTimeMillis();
+            log.warn("[ML-CB] Circuit opened — ML service unreachable, fast-failing for {}s", ML_CB_RESET_MS / 1000);
+        }
+    }
 
     /**
      * Flakiness = fraction of consecutive build pairs that flipped status (0.0–1.0).
@@ -427,19 +458,25 @@ public class JenkinsService {
                 mlHeaders.setContentType(MediaType.APPLICATION_JSON);
                 HttpEntity<Map<String, Object>> mlEntity = new HttpEntity<>(request, mlHeaders);
                 boolean anomalyDetected = false;
-                try {
-                    log.info("[BACKEND] Calling ML service at: {}", mlServiceUrl);
-                    ResponseEntity<Map> mlResponse = restTemplate.postForEntity(mlServiceUrl, mlEntity, Map.class);
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> mlBody = (Map<String, Object>) mlResponse.getBody();
-                    Object anomalies = mlBody.get("anomalies");
-                    log.info("[BACKEND] ML service response: {}", anomalies);
-                    if (anomalies instanceof List && !((List<?>) anomalies).isEmpty()) {
-                        anomalyDetected = true;
-                        log.info("[BACKEND] Anomaly detected by ML service!");
+                if (mlCircuitOpen()) {
+                    log.debug("[ML-CB] Circuit open — skipping /analyze for job={}", jobName);
+                } else {
+                    try {
+                        log.info("[BACKEND] Calling ML service at: {}", mlServiceUrl);
+                        ResponseEntity<Map> mlResponse = restTemplate.postForEntity(mlServiceUrl, mlEntity, Map.class);
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> mlBody = (Map<String, Object>) mlResponse.getBody();
+                        Object anomalies = mlBody.get("anomalies");
+                        log.info("[BACKEND] ML service response: {}", anomalies);
+                        if (anomalies instanceof List && !((List<?>) anomalies).isEmpty()) {
+                            anomalyDetected = true;
+                            log.info("[BACKEND] Anomaly detected by ML service!");
+                        }
+                        mlCallSucceeded();
+                    } catch (Exception e) {
+                        mlCallFailed();
+                        log.warn("[BACKEND] ML service call failed: {}", e.getMessage());
                     }
-                } catch (Exception e) {
-                    log.warn("[BACKEND] ML service call failed: " + " {}", e.getMessage());
                 }
 
                 recordJobMetrics(jobName, status, duration, anomalyDetected);
@@ -717,26 +754,32 @@ public class JenkinsService {
             }
 
             // ML anomaly detection
-            try {
-                Map<String, Object> request = new HashMap<>();
-                request.put("job_name", jobName);
-                request.put("durations", jobs.stream().map(JenkinsJob::getDuration).collect(Collectors.toList()));
-                request.put("statuses", jobs.stream().map(JenkinsJob::getStatus).collect(Collectors.toList()));
-                request.put("latest_status", currentStatus);
-                request.put("latest_duration", latest.getDuration());
-                HttpHeaders mlHeaders = new HttpHeaders();
-                mlHeaders.setContentType(MediaType.APPLICATION_JSON);
-                HttpEntity<Map<String, Object>> mlEntity = new HttpEntity<>(request, mlHeaders);
-                ResponseEntity<Map> mlResponse = restTemplate.postForEntity(mlServiceUrl, mlEntity, Map.class);
-                @SuppressWarnings("unchecked")
-                Map<String, Object> mlBody = (Map<String, Object>) mlResponse.getBody();
-                Object anomalies = mlBody.get("anomalies");
-                if (anomalies instanceof List && !((List<?>) anomalies).isEmpty()) {
-                    anomaly = true;
-                    log.info("[ANOMALY] ML detected anomaly in job: {}", jobName);
+            if (mlCircuitOpen()) {
+                log.debug("[ML-CB] Circuit open — skipping /analyze for job={}", jobName);
+            } else {
+                try {
+                    Map<String, Object> request = new HashMap<>();
+                    request.put("job_name", jobName);
+                    request.put("durations", jobs.stream().map(JenkinsJob::getDuration).collect(Collectors.toList()));
+                    request.put("statuses", jobs.stream().map(JenkinsJob::getStatus).collect(Collectors.toList()));
+                    request.put("latest_status", currentStatus);
+                    request.put("latest_duration", latest.getDuration());
+                    HttpHeaders mlHeaders = new HttpHeaders();
+                    mlHeaders.setContentType(MediaType.APPLICATION_JSON);
+                    HttpEntity<Map<String, Object>> mlEntity = new HttpEntity<>(request, mlHeaders);
+                    ResponseEntity<Map> mlResponse = restTemplate.postForEntity(mlServiceUrl, mlEntity, Map.class);
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> mlBody = (Map<String, Object>) mlResponse.getBody();
+                    Object anomalies = mlBody.get("anomalies");
+                    if (anomalies instanceof List && !((List<?>) anomalies).isEmpty()) {
+                        anomaly = true;
+                        log.info("[ANOMALY] ML detected anomaly in job: {}", jobName);
+                    }
+                    mlCallSucceeded();
+                } catch (Exception e) {
+                    mlCallFailed();
+                    log.warn("ML service call failed: {}", e.getMessage());
                 }
-            } catch (Exception e) {
-                log.warn("ML service call failed: {}", e.getMessage());
             }
 
             // SLA breach check
@@ -791,7 +834,7 @@ public class JenkinsService {
         // Failure prediction — requires ≥5 builds in history
         double failureProbability = 0.0;
         String riskLevel = "LOW";
-        if (jobs.size() >= 5) {
+        if (jobs.size() >= 5 && !mlCircuitOpen()) {
             try {
                 String predictUrl = mlServiceUrl.replace("/analyze", "/predict-failure");
                 List<Map<String, Object>> historyPayload = jobs.stream().map(j -> {
@@ -814,9 +857,13 @@ public class JenkinsService {
                     else if (failureProbability >= 0.3) riskLevel = "MEDIUM";
                     log.info("[PREDICT] job={} prob_failure={} risk={}", jobName, failureProbability, riskLevel);
                 }
+                mlCallSucceeded();
             } catch (Exception e) {
+                mlCallFailed();
                 log.warn("[PREDICT] Failure prediction unavailable for {}: {}", jobName, e.getMessage());
             }
+        } else if (mlCircuitOpen()) {
+            log.debug("[ML-CB] Circuit open — skipping /predict-failure for job={}", jobName);
         }
 
         double flakinessScore = computeFlakiness(jobs);
