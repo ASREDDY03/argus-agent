@@ -29,13 +29,13 @@ groups:
           description: "Job {{ $labels.job }} has been in a FAILURE state for over 10 minutes — likely multiple consecutive failures."
 
       - alert: JenkinsSlaBreach
-        expr: jenkins_job_duration_seconds > 600
+        expr: (jenkins_job_sla_seconds > 0) and (jenkins_job_duration_seconds > on(job) jenkins_job_sla_seconds)
         for: 1m
         labels:
           severity: warning
         annotations:
-          summary: "Jenkins job exceeded 10-minute SLA"
-          description: "Job {{ $labels.job }} took {{ $value }}s, exceeding the 600s SLA threshold."
+          summary: "Jenkins job exceeded configured SLA"
+          description: "Job {{ $labels.job }} took {{ $value }}s, exceeding its configured SLA threshold."
 
   - name: infrastructure-alerts
     rules:
