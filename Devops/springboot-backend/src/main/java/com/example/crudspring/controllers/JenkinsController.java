@@ -5,7 +5,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -21,7 +20,6 @@ import java.util.Map;
 import java.util.HashMap;
 
 @RestController
-@CrossOrigin(originPatterns = {"http://localhost:3000", "https://localhost"})
 public class JenkinsController {
     private final JenkinsService jenkinsService;
     private final JenkinsPoller jenkinsPoller;
