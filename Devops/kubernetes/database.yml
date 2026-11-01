@@ -16,13 +16,16 @@ spec:
     spec:
       containers:
       - name: mysqldb
-        image: mysql:5.7
+        image: mysql:8
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3306
         env:
         - name: MYSQL_ROOT_PASSWORD
-          value: kemane
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: root-password
         - name: MYSQL_DATABASE
           value: crud
 
