@@ -8,6 +8,7 @@ import sqlite3
 import pickle
 import time
 import os
+import threading
 
 app = Flask(__name__)
 metrics = PrometheusMetrics(app)
@@ -331,50 +332,55 @@ def analyze_logs():
     return jsonify({'root_causes': matched, 'error_lines': error_lines[:20]})
 
 
+def _retrain_job(name):
+    """Retrain IF and RF models for one job. Safe to call from a background thread."""
+    durations = load_job_durations(name)
+    history   = load_job_history(name)
+
+    if len(durations) >= 3:
+        X = np.array(durations).reshape(-1, 1)
+        if_model = IsolationForest(contamination=_job_contamination(name), random_state=42)
+        if_model.fit(X)
+        save_if_model(name, if_model)
+        _if_trained_on[name] = len(durations)
+
+    if len(history) >= 5:
+        df = build_features(pd.DataFrame(history))
+        clf = RandomForestClassifier(n_estimators=10, random_state=42)
+        clf.fit(df[FEATURE_COLS], df['status'])
+        save_rf_model(name, clf)
+        _rf_trained_on[name] = len(history)
+
+    print(f"[ML] retrain completed for {name}")
+
+
 @app.route('/retrain', methods=['POST'])
 def retrain():
-    """Force-retrain IF and RF models for a job (or all jobs if job_name omitted)."""
+    """
+    Kick off model retraining in a background daemon thread and return 202 immediately.
+    Retraining can be slow (RandomForest on large history) — keeping it off the request
+    path prevents the Spring Boot caller from timing out.
+    """
     data = request.get_json(silent=True) or {}
     job_name = data.get('job_name')
 
-    def retrain_job(name):
-        durations = load_job_durations(name)
-        history   = load_job_history(name)
-        results   = {'job': name}
-
-        if len(durations) >= 3:
-            X = np.array(durations).reshape(-1, 1)
-            if_model = IsolationForest(contamination=_job_contamination(name), random_state=42)
-            if_model.fit(X)
-            save_if_model(name, if_model)
-            _if_trained_on[name] = len(durations)
-            results['if_samples'] = len(durations)
-        else:
-            results['if_samples'] = 0
-            results['if_skipped'] = 'need >= 3 samples'
-
-        if len(history) >= 5:
-            df = build_features(pd.DataFrame(history))
-            clf = RandomForestClassifier(n_estimators=10, random_state=42)
-            clf.fit(df[FEATURE_COLS], df['status'])
-            save_rf_model(name, clf)
-            _rf_trained_on[name] = len(history)
-            results['rf_samples'] = len(history)
-        else:
-            results['rf_samples'] = 0
-            results['rf_skipped'] = 'need >= 5 samples'
-
-        print(f"[ML] /retrain completed for {name}")
-        return results
-
     if job_name:
-        return jsonify(retrain_job(job_name))
+        job_names = [job_name]
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        job_names = [r[0] for r in conn.execute(
+            'SELECT DISTINCT job_name FROM build_history').fetchall()]
+        conn.close()
 
-    # Retrain all jobs that have data in the DB
-    conn = sqlite3.connect(DB_PATH)
-    job_names = [r[0] for r in conn.execute('SELECT DISTINCT job_name FROM build_history').fetchall()]
-    conn.close()
-    return jsonify({'retrained': [retrain_job(n) for n in job_names]})
+    def _run():
+        for name in job_names:
+            try:
+                _retrain_job(name)
+            except Exception as exc:
+                print(f"[ML] retrain error for {name}: {exc}")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({'status': 'accepted', 'jobs': job_names}), 202
 
 
 @app.route('/health', methods=['GET'])
