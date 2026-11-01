@@ -10,6 +10,10 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import com.example.crudspring.dto.DebugConnectionResponse;
+import com.example.crudspring.dto.JenkinsConfigView;
+import com.example.crudspring.dto.JobInsightsResponse;
+import com.example.crudspring.dto.StatusResponse;
 import com.example.crudspring.models.AlertRecord;
 import com.example.crudspring.repository.AlertRecordRepository;
 import com.example.crudspring.services.JenkinsService;
@@ -19,7 +23,6 @@ import com.example.crudspring.websocket.JenkinsPoller;
 
 import java.util.List;
 import java.util.Map;
-import java.util.HashMap;
 
 @RestController
 public class JenkinsController {
@@ -43,7 +46,7 @@ public class JenkinsController {
     }
 
     @GetMapping("/api/jobs/{jobName}")
-    public Map<String, Object> getJobDetails(@PathVariable String jobName) {
+    public JobInsightsResponse getJobDetails(@PathVariable String jobName) {
         return jenkinsService.getJobInsights(jobName);
     }
 
@@ -53,43 +56,35 @@ public class JenkinsController {
     }
 
     @GetMapping("/api/jenkins/test")
-    public Map<String, Object> testJenkinsConnection() {
-        Map<String, Object> result = new java.util.HashMap<>();
+    public StatusResponse testJenkinsConnection() {
         try {
             List<JenkinsJob> jobs = jenkinsService.getAllJobs();
-            result.put("status", "success");
-            result.put("message", "Connected to Jenkins successfully");
-            result.put("jobCount", jobs.size());
-            result.put("jobs", jobs);
+            return StatusResponse.ok("Connected to Jenkins successfully", jobs.size(), jobs);
         } catch (Exception e) {
-            result.put("status", "error");
-            result.put("message", "Failed to connect to Jenkins: " + e.getMessage());
-            result.put("jobCount", 0);
-            result.put("error", e.getClass().getSimpleName());
-            e.printStackTrace();
+            return new StatusResponse("error", "Failed to connect to Jenkins: " + e.getMessage(),
+                0, null, e.getClass().getSimpleName());
         }
-        return result;
     }
 
     @GetMapping("/api/jenkins/debug")
-    public Map<String, Object> debugJenkinsConnection() {
+    public DebugConnectionResponse debugJenkinsConnection() {
         return jenkinsService.debugConnection();
     }
 
     @PostMapping("/api/jenkins/poll")
-    public Map<String, Object> triggerPoll() {
-        Map<String, Object> result = jenkinsService.triggerPoll();
+    public StatusResponse triggerPoll() {
+        StatusResponse result = jenkinsService.triggerPoll();
         jenkinsPoller.pushNow(); // push update to all WebSocket clients immediately
         return result;
     }
 
     @PostMapping("/api/jenkins/config")
-    public Map<String, Object> updateJenkinsConfig(@RequestBody Map<String, String> config) {
+    public StatusResponse updateJenkinsConfig(@RequestBody Map<String, String> config) {
         return jenkinsService.updateJenkinsConfig(config);
     }
 
     @GetMapping("/api/jenkins/config")
-    public Map<String, Object> getJenkinsConfig() {
+    public JenkinsConfigView getJenkinsConfig() {
         return jenkinsService.getJenkinsConfig();
     }
 
@@ -109,7 +104,7 @@ public class JenkinsController {
     }
 
     @PostMapping("/api/jobs/{jobName}/trigger")
-    public Map<String, Object> triggerBuild(@PathVariable String jobName) {
+    public StatusResponse triggerBuild(@PathVariable String jobName) {
         return jenkinsService.triggerBuild(jobName);
     }
 
@@ -129,4 +124,4 @@ public class JenkinsController {
         if (!demoModeEnabled) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         return ResponseEntity.ok(jenkinsService.getMockJobInsights(jobName));
     }
-} 
+}

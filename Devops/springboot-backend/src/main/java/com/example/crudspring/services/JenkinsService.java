@@ -1,5 +1,9 @@
 package com.example.crudspring.services;
 
+import com.example.crudspring.dto.DebugConnectionResponse;
+import com.example.crudspring.dto.JenkinsConfigView;
+import com.example.crudspring.dto.JobInsightsResponse;
+import com.example.crudspring.dto.StatusResponse;
 import com.example.crudspring.models.BuildRecord;
 import com.example.crudspring.models.JenkinsConfig;
 import com.example.crudspring.models.JenkinsJob;
@@ -215,15 +219,12 @@ public class JenkinsService {
         });
     }
 
-    public Map<String, Object> updateJenkinsConfig(Map<String, String> config) {
-        Map<String, Object> result = new HashMap<>();
+    public StatusResponse updateJenkinsConfig(Map<String, String> config) {
         try {
             if (config.containsKey("url")) {
                 String url = config.get("url");
                 if (url == null || !url.matches("https?://.+")) {
-                    result.put("status", "error");
-                    result.put("message", "Invalid Jenkins URL — must start with http:// or https://");
-                    return result;
+                    return StatusResponse.error("Invalid Jenkins URL — must start with http:// or https://");
                 }
                 this.jenkinsUrl = url;
             }
@@ -253,43 +254,32 @@ public class JenkinsService {
             configRepository.save(saved);
             log.info("[CONFIG] Jenkins config saved to database");
 
-            result.put("status", "success");
-            result.put("message", "Jenkins configuration updated and saved");
-            result.put("jobCount", jobs.size());
-            result.put("jobs", jobs);
+            return StatusResponse.ok("Jenkins configuration updated and saved", jobs.size(), jobs);
         } catch (Exception e) {
             log.warn("[CONFIG] Failed to update Jenkins configuration: {}", e.getMessage());
-            result.put("status", "error");
-            result.put("message", "Failed to update Jenkins configuration. Check server logs for details.");
-            result.put("jobCount", 0);
+            return StatusResponse.error("Failed to update Jenkins configuration. Check server logs for details.", 0);
         }
-        return result;
     }
 
-    public Map<String, Object> getJenkinsConfig() {
-        Map<String, Object> config = new HashMap<>();
-        config.put("url", this.jenkinsUrl != null ? this.jenkinsUrl : this.defaultJenkinsUrl);
-        config.put("user", this.jenkinsUser != null ? this.jenkinsUser : this.defaultJenkinsUser);
-        config.put("job", this.jobName != null ? this.jobName : this.defaultJobName);
+    public JenkinsConfigView getJenkinsConfig() {
+        String url  = this.jenkinsUrl  != null ? this.jenkinsUrl  : this.defaultJenkinsUrl;
+        String user = this.jenkinsUser != null ? this.jenkinsUser : this.defaultJenkinsUser;
+        String job  = this.jobName     != null ? this.jobName     : this.defaultJobName;
 
         // Mask token for display
         String tokenToShow = this.jenkinsToken != null ? this.jenkinsToken : this.defaultJenkinsToken;
-        if (tokenToShow != null && tokenToShow.length() > 4 && !tokenToShow.equals("your-jenkins-token-here")) {
-            config.put("token", "***" + tokenToShow.substring(tokenToShow.length() - 4));
-        } else {
-            config.put("token", "");
-        }
+        String maskedToken = (tokenToShow != null && tokenToShow.length() > 4
+                && !tokenToShow.equals("your-jenkins-token-here"))
+            ? "***" + tokenToShow.substring(tokenToShow.length() - 4)
+            : "";
 
-        // Mask Slack webhook for display (show only that it's configured)
         boolean slackConfigured = this.slackWebhookUrl != null && !this.slackWebhookUrl.isBlank();
-        config.put("slackConfigured", slackConfigured);
-        config.put("slackWebhookUrl", slackConfigured ? "***configured***" : "");
+        String maskedSlack = slackConfigured ? "***configured***" : "";
 
-        config.put("slaDurationSeconds",
-            this.slaDurationSeconds != null && this.slaDurationSeconds > 0
-                ? String.valueOf(this.slaDurationSeconds) : "");
+        String sla = this.slaDurationSeconds != null && this.slaDurationSeconds > 0
+            ? String.valueOf(this.slaDurationSeconds) : "";
 
-        return config;
+        return new JenkinsConfigView(url, user, job, maskedToken, slackConfigured, maskedSlack, sla);
     }
 
     public JenkinsBuildSummary getLatestBuildSummary(String jobName) {
@@ -603,25 +593,19 @@ public class JenkinsService {
     }
     
     // Method to manually trigger polling for frontend
-    public Map<String, Object> triggerPoll() {
-        Map<String, Object> result = new HashMap<>();
+    public StatusResponse triggerPoll() {
         try {
             pollJenkinsJob();
             List<JenkinsJob> jobs = getAllJobs();
-            result.put("status", "success");
-            result.put("message", "Jenkins polling completed successfully");
-            result.put("jobs", jobs);
+            return StatusResponse.okWithJobs("Jenkins polling completed successfully", jobs);
         } catch (Exception e) {
             log.warn("[POLL] Jenkins polling failed: {}", e.getMessage());
-            result.put("status", "error");
-            result.put("message", "Jenkins polling failed. Check server logs for details.");
-            result.put("jobs", java.util.Collections.emptyList());
+            return StatusResponse.okWithJobs("Jenkins polling failed. Check server logs for details.",
+                java.util.Collections.emptyList());
         }
-        return result;
     }
 
-    public Map<String, Object> triggerBuild(String jobName) {
-        Map<String, Object> result = new HashMap<>();
+    public StatusResponse triggerBuild(String jobName) {
         try {
             HttpEntity<String> authEntity = buildAuthEntity();
 
@@ -647,24 +631,16 @@ public class JenkinsService {
             String buildUrl = buildJobApiUrl(jobName, "build");
             restTemplate.exchange(buildUrl, HttpMethod.POST, triggerEntity, String.class);
 
-            result.put("status", "success");
-            result.put("message", "Build triggered for job: " + jobName);
+            return StatusResponse.ok("Build triggered for job: " + jobName);
         } catch (Exception e) {
             log.warn("[BUILD] Failed to trigger build for job={}: {}", jobName, e.getMessage());
-            result.put("status", "error");
-            result.put("message", "Failed to trigger build. Check server logs for details.");
+            return StatusResponse.error("Failed to trigger build. Check server logs for details.");
         }
-        return result;
     }
 
-    public Map<String, Object> debugConnection() {
-        Map<String, Object> result = new HashMap<>();
+    public DebugConnectionResponse debugConnection() {
+        int tokenLen = jenkinsToken != null ? jenkinsToken.length() : 0;
         try {
-            result.put("jenkinsUrl", jenkinsUrl);
-            result.put("jenkinsUser", jenkinsUser);
-            result.put("tokenLength", jenkinsToken != null ? jenkinsToken.length() : 0);
-            
-            // Test basic connection
             String apiUrl = jenkinsUrl + "/api/json";
             HttpHeaders headers = new HttpHeaders();
             String auth = jenkinsUser + ":" + jenkinsToken;
@@ -672,27 +648,25 @@ public class JenkinsService {
             String authHeader = "Basic " + new String(encodedAuth);
             headers.set("Authorization", authHeader);
             HttpEntity<String> entity = new HttpEntity<>(headers);
-            
-            log.info("[DEBUG] Testing connection to: ", apiUrl);
-            log.info("[DEBUG] Auth header: ", authHeader.substring(0, 20) + "...");
-            
+
+            log.info("[DEBUG] Testing connection to: {}", apiUrl);
+            log.info("[DEBUG] Auth header: {}...", authHeader.substring(0, 20));
+
             ResponseEntity<Map> response = restTemplate.exchange(apiUrl, HttpMethod.GET, entity, Map.class);
-            result.put("connectionStatus", "SUCCESS");
-            result.put("responseCode", response.getStatusCode().value());
-            
             @SuppressWarnings("unchecked")
             Map<String, Object> body = (Map<String, Object>) response.getBody();
             @SuppressWarnings("unchecked")
-            List<Map<String, Object>> jobs = (List<Map<String, Object>>) body.get("jobs");
-            result.put("rawJobsCount", jobs != null ? jobs.size() : 0);
-            result.put("rawJobs", jobs);
-            
+            List<Map<String, Object>> jobs = body != null
+                ? (List<Map<String, Object>>) body.get("jobs") : null;
+
+            return new DebugConnectionResponse(jenkinsUrl, jenkinsUser, tokenLen,
+                "SUCCESS", response.getStatusCode().value(),
+                jobs != null ? jobs.size() : 0, jobs, null);
         } catch (Exception e) {
             log.warn("[DEBUG] Jenkins connection test failed: {}", e.getMessage());
-            result.put("connectionStatus", "FAILED");
-            result.put("error", e.getClass().getSimpleName());
+            return new DebugConnectionResponse(jenkinsUrl, jenkinsUser, tokenLen,
+                "FAILED", null, null, null, e.getClass().getSimpleName());
         }
-        return result;
     }
 
     private List<JenkinsJob> getJobBuildHistory(String jobName) {
@@ -732,15 +706,14 @@ public class JenkinsService {
         return history;
     }
 
-    public Map<String, Object> getJobInsights(String jobName) {
+    public JobInsightsResponse getJobInsights(String jobName) {
         log.info("[JENKINS] Fetching job insights for: {}", jobName);
         List<JenkinsJob> jobs = getJobBuildHistory(jobName);
-        Map<String, Object> result = new HashMap<>();
-        result.put("history", jobs);
         boolean anomaly = false;
         boolean isFailure = false;
         String insight = "Normal";
         int streak = 0;
+        boolean slaBreach = false;
 
         if (!jobs.isEmpty()) {
             JenkinsJob latest = jobs.get(jobs.size() - 1);
@@ -783,7 +756,7 @@ public class JenkinsService {
             }
 
             // SLA breach check
-            boolean slaBreach = slaDurationSeconds != null && slaDurationSeconds > 0
+            slaBreach = slaDurationSeconds != null && slaDurationSeconds > 0
                 && latest.getDuration() != null && latest.getDuration() > slaDurationSeconds;
             if (slaBreach) {
                 log.info("[SLA] Breach for job={} duration={}s sla={}s", jobName, latest.getDuration(), slaDurationSeconds);
@@ -792,7 +765,6 @@ public class JenkinsService {
                     markAlerted(jobName + "_sla");
                 }
             }
-            result.put("slaBreach", slaBreach);
 
             // Failure always counts as anomaly
             if ("FAILURE".equalsIgnoreCase(currentStatus)) {
@@ -802,7 +774,7 @@ public class JenkinsService {
             }
 
             // Consecutive failure streak
-            int streak = computeConsecutiveFailures(jobName);
+            streak = computeConsecutiveFailures(jobName);
 
             // Call AI once if anomaly detected — fetch real build log first
             if (anomaly) {
@@ -824,11 +796,7 @@ public class JenkinsService {
                 }
             }
 
-            result.put("consecutiveFailures", streak);
             lastKnownStatus.put(jobName, currentStatus);
-        } else {
-            result.put("consecutiveFailures", 0);
-            result.put("slaBreach", false);
         }
 
         // Failure prediction — requires ≥5 builds in history
@@ -868,15 +836,9 @@ public class JenkinsService {
 
         double flakinessScore = computeFlakiness(jobs);
         int healthScore = computeHealthScore(jobs, streak, riskLevel);
-        result.put("anomaly", anomaly);
-        result.put("insight", insight);
-        result.put("failureProbability", failureProbability);
-        result.put("riskLevel", riskLevel);
-        result.put("flakinessScore", flakinessScore);
-        result.put("flaky", flakinessScore > 0.4);
-        result.put("healthScore", healthScore);
         log.info("[RESULT] job={} anomaly={} risk={} flakiness={} health={}", jobName, anomaly, riskLevel, flakinessScore, healthScore);
-        return result;
+        return new JobInsightsResponse(jobs, slaBreach, streak, anomaly, insight,
+            failureProbability, riskLevel, flakinessScore, flakinessScore > 0.4, healthScore);
     }
 
     public List<JenkinsJob> getMockJobs() {
@@ -910,11 +872,13 @@ public class JenkinsService {
         return java.util.Arrays.asList(frontend, backend, ml);
     }
 
-    public Map<String, Object> getMockJobInsights(String jobName) {
-        Map<String, Object> result = new HashMap<>();
+    public JobInsightsResponse getMockJobInsights(String jobName) {
         List<JenkinsJob> history = new java.util.ArrayList<>();
         boolean anomaly = false;
         String insight;
+        double failureProbability;
+        String riskLevel;
+        int consecutiveFailures;
 
         switch (jobName) {
             case "frontend-deploy":
@@ -925,9 +889,7 @@ public class JenkinsService {
                 history.add(new JenkinsJob(jobName, "SUCCESS", LocalDateTime.now().minusMinutes(5), 45L));
                 anomaly = true;
                 insight = "Anomaly detected: Build 3 days ago took 120s vs average of ~44s. Likely cause: npm dependency cache miss or slow registry response during install step.";
-                result.put("failureProbability", 0.38);
-                result.put("riskLevel", "MEDIUM");
-                result.put("consecutiveFailures", 0);
+                failureProbability = 0.38; riskLevel = "MEDIUM"; consecutiveFailures = 0;
                 break;
             case "backend-api":
                 history.add(new JenkinsJob(jobName, "SUCCESS", LocalDateTime.now().minusDays(4), 55L));
@@ -937,9 +899,7 @@ public class JenkinsService {
                 history.add(new JenkinsJob(jobName, "FAILURE", LocalDateTime.now().minusMinutes(12), 30L));
                 anomaly = true;
                 insight = "FAILURE: 2 consecutive failures detected. Build exits early (30s vs normal 55s) suggesting startup crash. Likely cause: missing environment variable or database connection timeout on deploy. Check application logs for NullPointerException or connection refused errors.";
-                result.put("failureProbability", 0.81);
-                result.put("riskLevel", "HIGH");
-                result.put("consecutiveFailures", 2);
+                failureProbability = 0.81; riskLevel = "HIGH"; consecutiveFailures = 2;
                 break;
             case "ml-pipeline":
                 history.add(new JenkinsJob(jobName, "SUCCESS", LocalDateTime.now().minusDays(5), 88L));
@@ -949,27 +909,17 @@ public class JenkinsService {
                 history.add(new JenkinsJob(jobName, "SUCCESS", LocalDateTime.now().minusMinutes(30), 90L));
                 anomaly = false;
                 insight = "All builds healthy. Consistent duration ~90s across 5 builds. No anomalies detected.";
-                result.put("failureProbability", 0.07);
-                result.put("riskLevel", "LOW");
-                result.put("consecutiveFailures", 0);
+                failureProbability = 0.07; riskLevel = "LOW"; consecutiveFailures = 0;
                 break;
             default:
                 insight = "No mock data available for job: " + jobName;
-                result.put("failureProbability", 0.0);
-                result.put("riskLevel", "LOW");
-                result.put("consecutiveFailures", 0);
+                failureProbability = 0.0; riskLevel = "LOW"; consecutiveFailures = 0;
         }
 
         double mockFlakiness = "backend-api".equals(jobName) ? 0.5 : 0.0;
-        String rl = result.containsKey("riskLevel") ? (String) result.get("riskLevel") : "LOW";
-        result.put("healthScore", result.containsKey("healthScore") ? result.get("healthScore")
-            : computeHealthScore(history, 0, rl));
-        result.put("history", history);
-        result.put("anomaly", anomaly);
-        result.put("insight", insight);
-        result.put("flakinessScore", mockFlakiness);
-        result.put("flaky", mockFlakiness > 0.4);
-        return result;
+        int healthScore = computeHealthScore(history, consecutiveFailures, riskLevel);
+        return new JobInsightsResponse(history, false, consecutiveFailures, anomaly, insight,
+            failureProbability, riskLevel, mockFlakiness, mockFlakiness > 0.4, healthScore);
     }
 
     /**
