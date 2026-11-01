@@ -140,9 +140,18 @@ def get_or_train_if_model(job_name):
 @app.route('/analyze', methods=['POST'])
 def analyze():
     print("[ML SERVICE] /analyze called")
-    data = request.get_json()
-    durations       = np.array(data.get('durations', []))
-    statuses        = data.get('statuses', [])
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'error': 'Request body must be JSON'}), 400
+    if not isinstance(data.get('durations'), list):
+        return jsonify({'error': 'durations must be a list'}), 400
+    if not isinstance(data.get('statuses'), list):
+        return jsonify({'error': 'statuses must be a list'}), 400
+    if len(data['durations']) != len(data['statuses']):
+        return jsonify({'error': 'durations and statuses must have the same length'}), 400
+
+    durations       = np.array(data['durations'])
+    statuses        = data['statuses']
     latest_status   = data.get('latest_status', '')
     latest_duration = data.get('latest_duration', 0)
     job_name        = data.get('job_name', 'unknown')
@@ -181,7 +190,9 @@ def analyze():
 
 @app.route('/predict-failure', methods=['POST'])
 def predict_failure():
-    data = request.json
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'error': 'Request body must be JSON'}), 400
     job_name = data.get('job_name', 'default')
 
     # Prefer persisted history from DB; fall back to request payload
@@ -217,7 +228,9 @@ def predict_failure():
 
 @app.route('/analyze-logs', methods=['POST'])
 def analyze_logs():
-    data = request.json
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'error': 'Request body must be JSON'}), 400
     logs = data.get('logs', '')
     if not logs:
         return jsonify({'root_causes': []})
@@ -228,6 +241,52 @@ def analyze_logs():
     common = Counter(tokens).most_common(5)
     root_causes = [w for w, _ in common if w not in ('error', 'exception', 'the', 'a', 'an', 'to', 'in', 'of', 'and')]
     return jsonify({'root_causes': root_causes, 'error_lines': error_lines})
+
+
+@app.route('/retrain', methods=['POST'])
+def retrain():
+    """Force-retrain IF and RF models for a job (or all jobs if job_name omitted)."""
+    data = request.get_json(silent=True) or {}
+    job_name = data.get('job_name')
+
+    def retrain_job(name):
+        durations = load_job_durations(name)
+        history   = load_job_history(name)
+        results   = {'job': name}
+
+        if len(durations) >= 3:
+            X = np.array(durations).reshape(-1, 1)
+            if_model = IsolationForest(contamination=0.1, random_state=42)
+            if_model.fit(X)
+            save_if_model(name, if_model)
+            _if_trained_on[name] = len(durations)
+            results['if_samples'] = len(durations)
+        else:
+            results['if_samples'] = 0
+            results['if_skipped'] = 'need >= 3 samples'
+
+        if len(history) >= 5:
+            df = pd.DataFrame(history)
+            clf = RandomForestClassifier(n_estimators=10, random_state=42)
+            clf.fit(df[['duration']], df['status'])
+            save_rf_model(name, clf)
+            _rf_trained_on[name] = len(history)
+            results['rf_samples'] = len(history)
+        else:
+            results['rf_samples'] = 0
+            results['rf_skipped'] = 'need >= 5 samples'
+
+        print(f"[ML] /retrain completed for {name}")
+        return results
+
+    if job_name:
+        return jsonify(retrain_job(job_name))
+
+    # Retrain all jobs that have data in the DB
+    conn = sqlite3.connect(DB_PATH)
+    job_names = [r[0] for r in conn.execute('SELECT DISTINCT job_name FROM build_history').fetchall()]
+    conn.close()
+    return jsonify({'retrained': [retrain_job(n) for n in job_names]})
 
 
 @app.route('/health', methods=['GET'])
