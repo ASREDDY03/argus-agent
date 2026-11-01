@@ -5,7 +5,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import com.example.crudspring.models.AlertRecord;
@@ -24,6 +26,9 @@ public class JenkinsController {
     private final JenkinsService jenkinsService;
     private final JenkinsPoller jenkinsPoller;
     private final AlertRecordRepository alertRecordRepository;
+
+    @Value("${demo.mode.enabled:false}")
+    private boolean demoModeEnabled;
 
     public JenkinsController(JenkinsService jenkinsService, JenkinsPoller jenkinsPoller,
                              AlertRecordRepository alertRecordRepository) {
@@ -114,12 +119,14 @@ public class JenkinsController {
     }
 
     @GetMapping("/api/jenkins/mock")
-    public List<JenkinsJob> getMockJobs() {
-        return jenkinsService.getMockJobs();
+    public ResponseEntity<?> getMockJobs() {
+        if (!demoModeEnabled) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        return ResponseEntity.ok(jenkinsService.getMockJobs());
     }
 
     @GetMapping("/api/jenkins/mock/{jobName}")
-    public Map<String, Object> getMockJobInsights(@PathVariable String jobName) {
-        return jenkinsService.getMockJobInsights(jobName);
+    public ResponseEntity<?> getMockJobInsights(@PathVariable String jobName) {
+        if (!demoModeEnabled) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        return ResponseEntity.ok(jenkinsService.getMockJobInsights(jobName));
     }
 } 

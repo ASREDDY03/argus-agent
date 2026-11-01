@@ -187,7 +187,15 @@ public class JenkinsService {
     public Map<String, Object> updateJenkinsConfig(Map<String, String> config) {
         Map<String, Object> result = new HashMap<>();
         try {
-            if (config.containsKey("url"))              this.jenkinsUrl      = config.get("url");
+            if (config.containsKey("url")) {
+                String url = config.get("url");
+                if (url == null || !url.matches("https?://.+")) {
+                    result.put("status", "error");
+                    result.put("message", "Invalid Jenkins URL — must start with http:// or https://");
+                    return result;
+                }
+                this.jenkinsUrl = url;
+            }
             if (config.containsKey("user"))             this.jenkinsUser     = config.get("user");
             if (config.containsKey("token"))            this.jenkinsToken    = config.get("token");
             if (config.containsKey("job"))              this.jobName         = config.get("job");
