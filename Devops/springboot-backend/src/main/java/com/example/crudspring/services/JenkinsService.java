@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -59,7 +60,14 @@ public class JenkinsService {
     @Value("${ml.service.url}")
     private String mlServiceUrl;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate = buildRestTemplate();
+
+    private static RestTemplate buildRestTemplate() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(5_000);  // 5s — fail fast if Jenkins/ML is unreachable
+        factory.setReadTimeout(15_000);    // 15s — Jenkins can be slow on large log fetches
+        return new RestTemplate(factory);
+    }
 
     private final MeterRegistry meterRegistry;
     private final SlackAlertService slackAlertService;
@@ -438,7 +446,8 @@ public class JenkinsService {
             log.info("[JENKINS] Fetching jobs from: {}", jenkinsUrl);
 
             HttpEntity<String> entity = buildAuthEntity();
-            String apiUrl = jenkinsUrl + "/api/json?tree=jobs[name,color]";
+            // Single tree query — embeds lastBuild in the job list, avoiding N+1 HTTP calls
+            String apiUrl = jenkinsUrl + "/api/json?tree=jobs[name,color,lastBuild[result,duration,timestamp]]";
             ResponseEntity<Map> response = restTemplate.exchange(apiUrl, HttpMethod.GET, entity, Map.class);
 
             @SuppressWarnings("unchecked")
@@ -452,29 +461,25 @@ public class JenkinsService {
             if (jobs != null) {
                 for (Map<String, Object> job : jobs) {
                     String name = (String) job.get("name");
-                    try {
-                        String buildUrl = jenkinsUrl + "/job/" + name + "/lastBuild/api/json";
-                        ResponseEntity<Map> buildResp = restTemplate.exchange(buildUrl, HttpMethod.GET, entity, Map.class);
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> buildInfo = (Map<String, Object>) buildResp.getBody();
-                        if (buildInfo != null) {
-                            String status = (String) buildInfo.get("result");
-                            Long durationMs = toLong(buildInfo.get("duration"));
-                            Long timestampMs = toLong(buildInfo.get("timestamp"));
-                            if (durationMs == null || timestampMs == null) {
-                                log.warn("[JENKINS] Skipping in-progress build for job {}", name);
-                                result.add(new JenkinsJob(name, "IN_PROGRESS", LocalDateTime.now(), 0L));
-                                continue;
-                            }
-                            Long duration = durationMs / 1000;
-                            LocalDateTime timestamp = LocalDateTime.ofInstant(Instant.ofEpochMilli(timestampMs), ZoneId.systemDefault());
-                            result.add(new JenkinsJob(name, status, timestamp, duration));
-                            log.info("[JENKINS] Added job: {} status={}", name, status);
-                        }
-                    } catch (Exception buildEx) {
-                        log.warn("[JENKINS] Failed to fetch build info for job {}: {}", name, buildEx.getMessage());
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> lastBuild = (Map<String, Object>) job.get("lastBuild");
+                    if (lastBuild == null) {
+                        log.warn("[JENKINS] No build history for job {}", name);
                         result.add(new JenkinsJob(name, "UNKNOWN", LocalDateTime.now(), 0L));
+                        continue;
                     }
+                    String status = (String) lastBuild.get("result");
+                    Long durationMs = toLong(lastBuild.get("duration"));
+                    Long timestampMs = toLong(lastBuild.get("timestamp"));
+                    if (durationMs == null || timestampMs == null) {
+                        log.warn("[JENKINS] In-progress or missing build fields for job {}", name);
+                        result.add(new JenkinsJob(name, "IN_PROGRESS", LocalDateTime.now(), 0L));
+                        continue;
+                    }
+                    Long duration = durationMs / 1000;
+                    LocalDateTime timestamp = LocalDateTime.ofInstant(Instant.ofEpochMilli(timestampMs), ZoneId.systemDefault());
+                    result.add(new JenkinsJob(name, status, timestamp, duration));
+                    log.info("[JENKINS] Added job: {} status={}", name, status);
                 }
             }
             // Merge cached anomaly/risk/streak data so every broadcast carries insights
