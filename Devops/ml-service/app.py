@@ -2,9 +2,6 @@ from flask import Flask, request, jsonify
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
 import numpy as np
 import pandas as pd
-import nltk
-from nltk.tokenize import word_tokenize
-from collections import Counter
 import re
 import sqlite3
 import pickle
@@ -65,11 +62,11 @@ def load_job_durations(job_name):
 def load_job_history(job_name):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        'SELECT duration, status FROM build_history WHERE job_name = ? ORDER BY ts DESC LIMIT 200',
+        'SELECT duration, status, ts FROM build_history WHERE job_name = ? ORDER BY ts DESC LIMIT 200',
         (job_name,)
     ).fetchall()
     conn.close()
-    return [{'duration': r[0], 'status': r[1]} for r in rows]
+    return [{'duration': r[0], 'status': r[1], 'ts': r[2]} for r in rows]
 
 def count_all_samples():
     conn = sqlite3.connect(DB_PATH)
@@ -119,6 +116,44 @@ def save_rf_model(job_name, model):
     with open(_rf_model_path(job_name), 'wb') as f:
         pickle.dump(model, f)
 
+FEATURE_COLS = ['duration', 'hour_of_day', 'day_of_week', 'rolling_failure_rate']
+
+def build_features(df):
+    """Enrich a history DataFrame with time and momentum features.
+
+    Expects columns: duration, status, ts (all present after load_job_history).
+    Returns a new DataFrame with FEATURE_COLS added.
+    """
+    df = df.copy()
+    if 'ts' in df.columns:
+        ts = pd.to_datetime(df['ts'], errors='coerce')
+        df['hour_of_day'] = ts.dt.hour.fillna(12).astype(int)
+        df['day_of_week'] = ts.dt.dayofweek.fillna(0).astype(int)
+    else:
+        df['hour_of_day'] = 12
+        df['day_of_week'] = 0
+
+    # Rolling failure rate of the 5 builds preceding each build.
+    # Computed in ascending order then restored to DESC to avoid look-ahead.
+    df_asc = df.iloc[::-1].reset_index(drop=True)
+    df_asc['rolling_failure_rate'] = (
+        (1 - df_asc['status'])
+        .rolling(5, min_periods=1).mean()
+        .shift(1)
+        .fillna(0.0)
+    )
+    return df_asc.iloc[::-1].reset_index(drop=True)
+
+def _job_contamination(job_name):
+    """Estimate IF contamination from the observed failure rate, clamped to [0.05, 0.4]."""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        'SELECT AVG(1 - status) FROM build_history WHERE job_name = ?', (job_name,)
+    ).fetchone()
+    conn.close()
+    failure_rate = row[0] if row and row[0] is not None else 0.1
+    return max(0.05, min(0.4, failure_rate))
+
 def get_or_train_if_model(job_name):
     # save_builds was already called before this — DB is the authoritative source.
     all_durations = load_job_durations(job_name)
@@ -126,12 +161,13 @@ def get_or_train_if_model(job_name):
     model = load_if_model(job_name)
 
     if model is None or n > _if_trained_on.get(job_name, 0):
+        contamination = _job_contamination(job_name)
         X = np.array(all_durations).reshape(-1, 1)
-        model = IsolationForest(contamination=0.1, random_state=42)
+        model = IsolationForest(contamination=contamination, random_state=42)
         model.fit(X)
         save_if_model(job_name, model)
         _if_trained_on[job_name] = n
-        print(f"[ML] IF model retrained for {job_name} on {n} samples")
+        print(f"[ML] IF model retrained for {job_name} on {n} samples (contamination={contamination:.2f})")
 
     return model
 
@@ -200,8 +236,8 @@ def predict_failure():
     if len(history) < 5:
         return jsonify({'prob_failure': 0.0, 'note': 'Not enough data'})
 
-    df = pd.DataFrame(history)
-    X = df[['duration']]
+    df = build_features(pd.DataFrame(history))
+    X = df[FEATURE_COLS]
     y = df['status']
 
     # Retrain whenever we have more data than the last training run
@@ -212,19 +248,55 @@ def predict_failure():
         clf.fit(X, y)
         save_rf_model(job_name, clf)
         _rf_trained_on[job_name] = n
-        print(f"[ML] RF model retrained for {job_name} on {n} samples")
+        print(f"[ML] RF model retrained for {job_name} on {n} samples with features {FEATURE_COLS}")
 
-    # Use the most recent build duration (history is ordered DESC)
-    next_duration = df['duration'].iloc[0]
+    # Features for the next (hypothetical) build:
+    # - duration: use most recent as proxy
+    # - time: use now (we don't know when it will run)
+    # - rolling_failure_rate: failure rate of the last 5 actual builds
+    now = pd.Timestamp.now()
+    next_failure_rate = float((1 - df['status'].iloc[:5]).mean())
+    next_features = [[
+        df['duration'].iloc[0],
+        now.hour,
+        now.dayofweek,
+        next_failure_rate,
+    ]]
 
     # Guard: if training data has only one class, predict_proba won't have a [1] column
     classes = list(clf.classes_)
     if 1 not in classes:
         return jsonify({'prob_failure': 1.0, 'note': 'No successful builds in training data'})
     success_idx = classes.index(1)
-    prob_failure = 1 - clf.predict_proba([[next_duration]])[0][success_idx]
+    try:
+        prob_failure = 1 - clf.predict_proba(next_features)[0][success_idx]
+    except ValueError:
+        # Old model trained on a different feature set — force retrain
+        clf = RandomForestClassifier(n_estimators=10, random_state=42)
+        clf.fit(X, y)
+        save_rf_model(job_name, clf)
+        _rf_trained_on[job_name] = n
+        classes = list(clf.classes_)
+        if 1 not in classes:
+            return jsonify({'prob_failure': 1.0, 'note': 'No successful builds in training data'})
+        success_idx = classes.index(1)
+        prob_failure = 1 - clf.predict_proba(next_features)[0][success_idx]
     return jsonify({'prob_failure': float(prob_failure)})
 
+
+# Ordered from most-specific to least-specific; all matching categories are returned.
+_LOG_PATTERNS = [
+    ('OutOfMemory',      r'OutOfMemoryError|out of memory|heap space|GC overhead limit exceeded'),
+    ('ConnectionError',  r'Connection refused|ECONNREFUSED|connection timed out|UnknownHostException|Network is unreachable'),
+    ('NullPointer',      r'NullPointerException'),
+    ('TestFailure',      r'Tests run:.*Failures: [1-9]|AssertionError|FAILED.*test|test.*FAILED'),
+    ('CompileError',     r'error: cannot find symbol|[Cc]ompilation fail|[Cc]ompile error'),
+    ('PermissionDenied', r'Permission denied|EACCES|Access is denied'),
+    ('DependencyError',  r'Could not resolve|Could not find artifact|[Dd]ependency.*not found|Unresolved depend'),
+    ('Timeout',          r'[Tt]imed? ?out|ETIMEDOUT|Read timed out|socket timeout'),
+    ('DiskSpace',        r'No space left on device|ENOSPC|disk.*full'),
+    ('DockerError',      r'[Dd]ocker.*[Ee]rror|container.*exited [1-9]|image.*not found'),
+]
 
 @app.route('/analyze-logs', methods=['POST'])
 def analyze_logs():
@@ -234,13 +306,19 @@ def analyze_logs():
     logs = data.get('logs', '')
     if not logs:
         return jsonify({'root_causes': []})
-    error_lines = [line for line in logs.split('\n') if 'error' in line.lower() or 'exception' in line.lower()]
-    tokens = []
-    for line in error_lines:
-        tokens += word_tokenize(re.sub(r'[^a-zA-Z0-9 ]', '', line.lower()))
-    common = Counter(tokens).most_common(5)
-    root_causes = [w for w, _ in common if w not in ('error', 'exception', 'the', 'a', 'an', 'to', 'in', 'of', 'and')]
-    return jsonify({'root_causes': root_causes, 'error_lines': error_lines})
+
+    error_lines = [
+        line for line in logs.split('\n')
+        if re.search(r'error|exception|fail|warn', line, re.IGNORECASE)
+    ]
+
+    matched = [
+        category
+        for category, pattern in _LOG_PATTERNS
+        if any(re.search(pattern, line) for line in error_lines)
+    ]
+
+    return jsonify({'root_causes': matched, 'error_lines': error_lines[:20]})
 
 
 @app.route('/retrain', methods=['POST'])
@@ -256,7 +334,7 @@ def retrain():
 
         if len(durations) >= 3:
             X = np.array(durations).reshape(-1, 1)
-            if_model = IsolationForest(contamination=0.1, random_state=42)
+            if_model = IsolationForest(contamination=_job_contamination(name), random_state=42)
             if_model.fit(X)
             save_if_model(name, if_model)
             _if_trained_on[name] = len(durations)
@@ -266,9 +344,9 @@ def retrain():
             results['if_skipped'] = 'need >= 3 samples'
 
         if len(history) >= 5:
-            df = pd.DataFrame(history)
+            df = build_features(pd.DataFrame(history))
             clf = RandomForestClassifier(n_estimators=10, random_state=42)
-            clf.fit(df[['duration']], df['status'])
+            clf.fit(df[FEATURE_COLS], df['status'])
             save_rf_model(name, clf)
             _rf_trained_on[name] = len(history)
             results['rf_samples'] = len(history)
@@ -300,9 +378,7 @@ def health():
     })
 
 
-# Run DB init and NLTK download at import time so gunicorn workers pick it up
-nltk.download('punkt', quiet=True)
-nltk.download('punkt_tab', quiet=True)
+# Init DB at import time so gunicorn workers pick it up
 init_db()
 print(f"[ML] DB: {DB_PATH}")
 
