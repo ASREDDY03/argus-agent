@@ -2,6 +2,7 @@ services:
   mysqldbs:
     image: mysql:8
     container_name: mysqldbs
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -23,6 +24,7 @@ services:
     build:
       context: ./springboot-backend
     container_name: springboot-backend
+    restart: unless-stopped
     # Port 8020 is only needed internally via nginx; do not expose to the host
     environment:
       - SPRING_DATASOURCE_URL=jdbc:mysql://mysqldbs:3306/${MYSQL_DATABASE}
@@ -40,7 +42,12 @@ services:
       mysqldbs:
         condition: service_healthy
       ml-service:
-        condition: service_started
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: "1Gi"
+          cpus: "1.0"
     networks:
       - devopsnet
 
@@ -48,9 +55,21 @@ services:
     build:
       context: ./ml-service
     container_name: ml-service
-    # Port 8000 is only needed internally via nginx; do not expose to the host
+    restart: unless-stopped
+    # Port 8000 is only needed internally; do not expose to the host
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     volumes:
       - ml-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: "512Mi"
+          cpus: "0.5"
     networks:
       - devopsnet
 
@@ -58,12 +77,19 @@ services:
     build:
       context: ./react-frontend
     container_name: react-frontend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: "256Mi"
+          cpus: "0.25"
     networks:
       - devopsnet
 
   nginx:
     image: nginx:alpine
     container_name: nginx
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
@@ -74,25 +100,36 @@ services:
       - react-frontend
       - springboot-backend
       - ml-service
+    deploy:
+      resources:
+        limits:
+          memory: "128Mi"
+          cpus: "0.25"
     networks:
       - devopsnet
 
   prometheus:
     image: prom/prometheus:v2.53.0
     container_name: prometheus
+    restart: unless-stopped
+    # No host port — Grafana queries Prometheus internally; expose 9090 locally if needed for debugging
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - ./alert.rules.yml:/etc/prometheus/alert.rules.yml
-    ports:
-      - "9090:9090"
     depends_on:
       - springboot-backend
+    deploy:
+      resources:
+        limits:
+          memory: "512Mi"
+          cpus: "0.5"
     networks:
       - devopsnet
 
   grafana:
     image: grafana/grafana:11.2.0
     container_name: grafana
+    restart: unless-stopped
     ports:
       - "3001:3000"
     environment:
@@ -105,14 +142,19 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
       - prometheus
+    deploy:
+      resources:
+        limits:
+          memory: "512Mi"
+          cpus: "0.5"
     networks:
       - devopsnet
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
     container_name: alertmanager
-    ports:
-      - "9093:9093"
+    restart: unless-stopped
+    # No host port — Prometheus routes alerts to alertmanager internally
     environment:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
     volumes:
@@ -120,6 +162,11 @@ services:
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--config.expand-env=true'
+    deploy:
+      resources:
+        limits:
+          memory: "128Mi"
+          cpus: "0.25"
     networks:
       - devopsnet
 
