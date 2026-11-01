@@ -6,6 +6,7 @@ import pandas as pd
 import re
 import sqlite3
 import pickle
+import time
 import os
 
 app = Flask(__name__)
@@ -14,6 +15,9 @@ metrics = PrometheusMetrics(app)
 DATA_DIR = os.environ.get('ML_DATA_DIR', '/data')
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, 'argus_ml.db')
+
+# Number of days before a model is flagged as stale in /health
+STALE_MODEL_DAYS = int(os.environ.get('ML_STALE_MODEL_DAYS', '7'))
 
 # ── In-memory model caches ────────────────────────────────────────────────────
 _rf_cache: dict = {}
@@ -375,12 +379,50 @@ def retrain():
 
 @app.route('/health', methods=['GET'])
 def health():
+    now = time.time()
     total = count_all_samples()
+
+    conn = sqlite3.connect(DB_PATH)
+    job_names = [r[0] for r in conn.execute(
+        'SELECT DISTINCT job_name FROM build_history'
+    ).fetchall()]
+    conn.close()
+
+    model_info = {}
+    stale_jobs = []
+    for job in job_names:
+        info = {}
+        if_path = _if_model_path(job)
+        rf_path = _rf_model_path(job)
+
+        if os.path.exists(if_path):
+            age_days = round((now - os.path.getmtime(if_path)) / 86400, 1)
+            info['if_age_days'] = age_days
+            info['if_stale'] = age_days > STALE_MODEL_DAYS
+        else:
+            info['if_age_days'] = None
+            info['if_stale'] = None  # not yet trained
+
+        if os.path.exists(rf_path):
+            age_days = round((now - os.path.getmtime(rf_path)) / 86400, 1)
+            info['rf_age_days'] = age_days
+            info['rf_stale'] = age_days > STALE_MODEL_DAYS
+        else:
+            info['rf_age_days'] = None
+            info['rf_stale'] = None  # not yet trained
+
+        model_info[job] = info
+        if info.get('if_stale') or info.get('rf_stale'):
+            stale_jobs.append(job)
+
     return jsonify({
         'status': 'ok',
         'persisted_samples': total,
         'if_models_cached': len(_if_cache),
         'rf_models_cached': len(_rf_cache),
+        'stale_threshold_days': STALE_MODEL_DAYS,
+        'stale_jobs': stale_jobs,
+        'models': model_info,
     })
 
 
