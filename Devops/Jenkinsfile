@@ -42,7 +42,7 @@ pipeline {
                     steps {
                         dir('react-frontend') {
                             sh 'npm ci --prefer-offline'
-                            sh 'CI=true npm test -- --watchAll=false --passWithNoTests'
+                            sh 'CI=true npm test -- --watchAll=false'
                         }
                     }
                 }

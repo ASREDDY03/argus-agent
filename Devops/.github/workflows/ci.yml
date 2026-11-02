@@ -80,7 +80,7 @@ jobs:
         run: npm ci --prefer-offline
 
       - name: Lint & test
-        run: CI=true npm test -- --watchAll=false --passWithNoTests
+        run: CI=true npm test -- --watchAll=false
 
       - name: Build
         run: npm run build
