@@ -1,0 +1,216 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: staging
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+
+    scrape_configs:
+      - job_name: 'springboot-backend'
+        metrics_path: '/actuator/prometheus'
+        static_configs:
+          - targets: ['springboot-backend:8020']
+
+      - job_name: 'ml-service'
+        metrics_path: '/metrics'
+        static_configs:
+          - targets: ['ml-service:8000']
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['alertmanager:9093']
+
+    rule_files:
+      - "/etc/prometheus/rules/alert.rules.yml"
+      - "/etc/prometheus/rules/recording.rules.yml"
+
+  alert.rules.yml: |
+    groups:
+      - name: jenkins-job-alerts
+        rules:
+          - alert: JenkinsJobFailed
+            expr: jenkins_job_status == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Jenkins job failed"
+              description: "Job {{ $labels.job }} has failed."
+
+          - alert: JenkinsJobAnomaly
+            expr: jenkins_job_anomaly == 1
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Jenkins job anomaly detected"
+              description: "ML anomaly detected for job {{ $labels.job }}."
+
+          - alert: JenkinsSustainedFailure
+            expr: jenkins_job_status == 0
+            for: 10m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Jenkins job failing for 10+ minutes"
+              description: "Job {{ $labels.job }} has been in FAILURE state for over 10 minutes."
+
+          - alert: JenkinsSlaBreach
+            expr: (jenkins_job_sla_seconds > 0) and (jenkins_job_duration_seconds > on(job) jenkins_job_sla_seconds)
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Jenkins job exceeded configured SLA"
+              description: "Job {{ $labels.job }} took {{ $value }}s, exceeding its SLA threshold."
+
+      - name: infrastructure-alerts
+        rules:
+          - alert: BackendDown
+            expr: up{job="springboot-backend"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Argus backend is unreachable"
+              description: "Prometheus cannot scrape the Spring Boot backend."
+
+  recording.rules.yml: |
+    groups:
+      - name: argus-recording-rules
+        interval: 15s
+        rules:
+          - record: job:jenkins_success_rate:5m
+            expr: avg_over_time(jenkins_job_status[5m])
+
+          - record: job:jenkins_avg_duration:10m
+            expr: avg_over_time(jenkins_job_duration_seconds[10m])
+
+          - record: job:jenkins_anomaly_rate:5m
+            expr: avg_over_time(jenkins_job_anomaly[5m])
+
+          - record: instance:backend_http_rate:1m
+            expr: |
+              sum(rate(http_server_requests_seconds_count{job="springboot-backend"}[1m]))
+                by (instance)
+
+          - record: instance:backend_p95_latency:5m
+            expr: |
+              histogram_quantile(0.95,
+                sum(rate(http_server_requests_seconds_bucket{job="springboot-backend"}[5m]))
+                  by (le, instance)
+              )
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data-pvc
+  namespace: staging
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-deploy
+  namespace: staging
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534    # nobody — matches prom/prometheus default
+        fsGroup: 65534
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.53.0
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time=15d"
+            - "--web.enable-lifecycle"
+          ports:
+            - containerPort: 9090
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: data
+              mountPath: /prometheus
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+            items:
+              - key: prometheus.yml
+                path: prometheus.yml
+        - name: rules
+          configMap:
+            name: prometheus-config
+            items:
+              - key: alert.rules.yml
+                path: alert.rules.yml
+              - key: recording.rules.yml
+                path: recording.rules.yml
+        - name: data
+          persistentVolumeClaim:
+            claimName: prometheus-data-pvc
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: staging
+  labels:
+    name: prometheus
+spec:
+  ports:
+    - port: 9090
+      targetPort: 9090
+  selector:
+    app: prometheus

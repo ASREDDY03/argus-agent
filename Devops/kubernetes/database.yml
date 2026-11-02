@@ -2,8 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mysql-deploy
+  namespace: staging
   labels:
-   app: mysqldb
+    app: mysqldb
 spec:
   replicas: 1
   selector:
@@ -34,8 +35,9 @@ spec:
 
 apiVersion: v1
 kind: Service
-metadata: 
+metadata:
   name: mysqldb
+  namespace: staging
   labels:
     name: mysql-service
 spec:
