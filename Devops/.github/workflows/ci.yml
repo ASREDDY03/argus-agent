@@ -13,10 +13,25 @@ concurrency:
 
 jobs:
 
+  # ── Secret scanning (runs first — blocks everything else if a secret leaks) ──
+  secret-scan:
+    name: Secret scan — gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so gitleaks can scan all commits in the PR
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # ── Spring Boot ──────────────────────────────────────────────────────────────
   springboot:
     name: Spring Boot — build & test
     runs-on: ubuntu-latest
+    needs: secret-scan
     defaults:
       run:
         working-directory: Devops/springboot-backend
@@ -46,6 +61,7 @@ jobs:
   react:
     name: React — lint & test
     runs-on: ubuntu-latest
+    needs: secret-scan
     defaults:
       run:
         working-directory: Devops/react-frontend
@@ -73,6 +89,7 @@ jobs:
   ml-service:
     name: ML service — tests
     runs-on: ubuntu-latest
+    needs: secret-scan
     defaults:
       run:
         working-directory: Devops/ml-service
