@@ -2,8 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: frontend-deploy
+  namespace: staging
   labels:
-   app: frontend-app
+    app: frontend-app
 spec:
   replicas: 1
   selector:
@@ -48,8 +49,9 @@ spec:
 
 apiVersion: v1
 kind: Service
-metadata: 
+metadata:
   name: react-frontend
+  namespace: staging
   labels:
     name: frontend-service
 spec:
