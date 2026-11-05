@@ -26,15 +26,16 @@ def test_retrain_all_jobs_lists_all(client):
 
 
 def test_retrain_trains_models_in_background(client):
-    """Background thread should train and persist models within a short window."""
+    """Background thread should train and persist both IF and RF models within a short window."""
     ml_app.save_builds('bg-job', [100, 110, 105, 90, 120, 95, 115], ['SUCCESS'] * 7)
     r = client.post('/retrain', json={'job_name': 'bg-job'})
     assert r.status_code == 202
 
-    # Give the daemon thread up to 3 s to finish training
-    deadline = time.time() + 3.0
+    # Poll for BOTH models — RF is trained after IF so we wait until both are ready
+    deadline = time.time() + 5.0
     while time.time() < deadline:
-        if ml_app.load_if_model('bg-job') is not None:
+        if (ml_app.load_if_model('bg-job') is not None
+                and ml_app.load_rf_model('bg-job') is not None):
             break
         time.sleep(0.05)
 
