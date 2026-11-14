@@ -46,8 +46,8 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Run tests
-        run: mvn test
+      - name: Run tests & generate coverage
+        run: mvn verify
 
       - name: Publish test results
         if: always()
@@ -56,6 +56,13 @@ jobs:
           name: springboot-surefire-reports
           path: Devops/springboot-backend/target/surefire-reports/*.xml
           if-no-files-found: ignore
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: Devops/springboot-backend/target/site/jacoco/jacoco.xml
+          flags: springboot
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   # ── React frontend ───────────────────────────────────────────────────────────
   react:
@@ -80,7 +87,14 @@ jobs:
         run: npm ci --prefer-offline
 
       - name: Lint & test
-        run: CI=true npm test -- --watchAll=false
+        run: CI=true npm test -- --watchAll=false --coverage --coverageReporters=lcov
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: Devops/react-frontend/coverage/lcov.info
+          flags: react
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Build
         run: npm run build
@@ -107,7 +121,14 @@ jobs:
         run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short --cov=app --cov-report=term-missing
+        run: python -m pytest tests/ -v --tb=short --cov=app --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: Devops/ml-service/coverage.xml
+          flags: ml-service
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   # ── Trivy image scans (parallel, one job per service) ────────────────────────
   # Each job builds its image with `load: true` so the image lands in the local
