@@ -1,0 +1,63 @@
+# Minimal stack for CI smoke tests.
+# Skips nginx, prometheus, grafana, alertmanager.
+# External services (Jenkins, Ollama) are stubbed — services handle unreachable URLs gracefully.
+services:
+
+  mysqldbs:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: smoketest
+      MYSQL_DATABASE: argusdb
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+    networks:
+      - smoketest-net
+
+  ml-service:
+    build:
+      context: ./ml-service
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - smoketest-net
+
+  springboot-backend:
+    build:
+      context: ./springboot-backend
+    ports:
+      - "8020:8020"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysqldbs:3306/argusdb
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=smoketest
+      - ML_SERVICE_URL=http://ml-service:8000/analyze
+      - OLLAMA_URL=http://127.0.0.1:1
+      - OLLAMA_MODEL=qwen2.5-coder:14b
+      - JENKINS_URL=http://127.0.0.1:1
+      - JENKINS_USER=smoke
+      - JENKINS_TOKEN=smoke
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8020/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+    depends_on:
+      mysqldbs:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+    networks:
+      - smoketest-net
+
+networks:
+  smoketest-net:
+    driver: bridge
