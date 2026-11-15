@@ -1,0 +1,132 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-secret
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  slack-webhook-url: {{ .Values.alertmanager.slackWebhookUrl | default "" | quote }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 1m
+
+    route:
+      receiver: 'slack-warnings'
+      group_by: ['alertname', 'job']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - match:
+            severity: critical
+          receiver: 'slack-critical'
+          group_wait: 10s
+          repeat_interval: 1h
+
+    receivers:
+      - name: 'slack-critical'
+        slack_configs:
+          - api_url: '${SLACK_WEBHOOK_URL}'
+            channel: '#alerts-critical'
+            send_resolved: true
+            title: ':red_circle: CRITICAL — {{ "{{" }} .GroupLabels.alertname {{ "}}" }}'
+            text: '{{ "{{" }} range .Alerts {{ "}}" }}{{ "{{" }} .Annotations.description {{ "}}" }}{{ "{{" }} end {{ "}}" }}'
+
+      - name: 'slack-warnings'
+        slack_configs:
+          - api_url: '${SLACK_WEBHOOK_URL}'
+            channel: '#alerts'
+            send_resolved: true
+            title: ':warning: {{ "{{" }} .GroupLabels.alertname {{ "}}" }}'
+            text: '{{ "{{" }} range .Alerts {{ "}}" }}{{ "{{" }} .Annotations.description {{ "}}" }}{{ "{{" }} end {{ "}}" }}'
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager-deploy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: alertmanager
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+      {{- include "argus-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+        {{- include "argus-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.27.0
+          args:
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+            - "--config.expand-env=true"
+          ports:
+            - containerPort: 9093
+          env:
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: alertmanager-secret
+                  key: slack-webhook-url
+          resources:
+            {{- toYaml .Values.alertmanager.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9093
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9093
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  ports:
+    - port: 9093
+      targetPort: 9093
+  selector:
+    app: alertmanager
+    {{- include "argus-agent.selectorLabels" . | nindent 4 }}

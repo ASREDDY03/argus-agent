@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deploy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: frontend-app
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      app: frontend-app
+      {{- include "argus-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: frontend-app
+        {{- include "argus-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: frontend-container
+          image: "{{ .Values.images.frontend.repository }}:{{ .Values.images.frontend.tag }}"
+          imagePullPolicy: {{ .Values.images.frontend.pullPolicy }}
+          ports:
+            - containerPort: 3000
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: react-frontend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: {{ .Values.frontend.service.nodePort }}
+  selector:
+    app: frontend-app
+    {{- include "argus-agent.selectorLabels" . | nindent 4 }}
