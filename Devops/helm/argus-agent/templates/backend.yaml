@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deploy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: backend-app
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  selector:
+    matchLabels:
+      app: backend-app
+      {{- include "argus-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: backend-app
+        {{- include "argus-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: backend-container
+          image: "{{ .Values.images.backend.repository }}:{{ .Values.images.backend.tag }}"
+          imagePullPolicy: {{ .Values.images.backend.pullPolicy }}
+          ports:
+            - containerPort: 8020
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:mysql://mysqldb:3306/{{ .Values.mysql.database }}"
+            - name: SPRING_DATASOURCE_USERNAME
+              value: "root"
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: root-password
+            - name: ML_SERVICE_URL
+              value: "http://ml-service:8000/analyze"
+            - name: OLLAMA_URL
+              value: {{ .Values.backend.ollama.url | quote }}
+            - name: OLLAMA_MODEL
+              value: {{ .Values.backend.ollama.model | quote }}
+            - name: JENKINS_URL
+              value: {{ .Values.backend.jenkins.url | quote }}
+            - name: JENKINS_USER
+              value: {{ .Values.backend.jenkins.user | quote }}
+            - name: JENKINS_TOKEN
+              value: {{ .Values.backend.jenkins.token | quote }}
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8020
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8020
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: springboot-backend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "argus-agent.labels" . | nindent 4 }}
+spec:
+  ports:
+    - port: 8020
+      targetPort: 8020
+  selector:
+    app: backend-app
+    {{- include "argus-agent.selectorLabels" . | nindent 4 }}

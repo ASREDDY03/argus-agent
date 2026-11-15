@@ -1,0 +1,16 @@
+apiVersion: v2
+name: argus-agent
+description: AI-powered DevOps monitoring — Jenkins anomaly detection, local LLM insights, Grafana dashboards
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - devops
+  - monitoring
+  - jenkins
+  - ml
+  - grafana
+home: https://github.com/ASREDDY03/argus-agent
+maintainers:
+  - name: Santhosh Reddy
+    url: https://github.com/ASREDDY03

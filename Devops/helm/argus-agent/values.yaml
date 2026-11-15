@@ -1,0 +1,118 @@
+# ── Images ────────────────────────────────────────────────────────────────────
+images:
+  backend:
+    repository: lugar2020/springboot-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  mlService:
+    repository: lugar2020/ml-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: lugar2020/react-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+
+# ── MySQL ──────────────────────────────────────────────────────────────────────
+mysql:
+  database: argusdb
+  # Provide at install time — never commit real passwords:
+  #   helm install argus-agent ./helm/argus-agent --set mysql.rootPassword=secret
+  rootPassword: ""
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# ── ML service ────────────────────────────────────────────────────────────────
+mlService:
+  replicas: 1
+  persistence:
+    size: 1Gi
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# ── Spring Boot backend ───────────────────────────────────────────────────────
+backend:
+  replicas: 1
+  jenkins:
+    url: "http://host.docker.internal:8080"
+    user: ""
+    token: ""
+  ollama:
+    url: "http://host.docker.internal:11434"
+    model: "qwen2.5-coder:14b"
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# ── React frontend ────────────────────────────────────────────────────────────
+frontend:
+  replicas: 1
+  service:
+    nodePort: 30006
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "50m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+# ── Prometheus ────────────────────────────────────────────────────────────────
+prometheus:
+  retention: "15d"
+  persistence:
+    size: 5Gi
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# ── Grafana ───────────────────────────────────────────────────────────────────
+grafana:
+  # Provide at install time:
+  #   helm install argus-agent ./helm/argus-agent --set grafana.adminPassword=secret
+  adminPassword: ""
+  service:
+    nodePort: 30007
+  persistence:
+    size: 2Gi
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# ── Alertmanager ──────────────────────────────────────────────────────────────
+alertmanager:
+  # Provide at install time:
+  #   helm install argus-agent ./helm/argus-agent --set alertmanager.slackWebhookUrl=https://hooks.slack.com/...
+  slackWebhookUrl: ""
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "200m"
