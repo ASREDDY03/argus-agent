@@ -15,7 +15,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: "512Mi"
+          memory: "512m"
           cpus: "0.5"
     networks:
       - devopsnet
@@ -52,7 +52,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: "1Gi"
+          memory: "1g"
           cpus: "1.0"
     networks:
       - devopsnet
@@ -74,7 +74,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: "512Mi"
+          memory: "512m"
           cpus: "0.5"
     networks:
       - devopsnet
@@ -93,7 +93,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: "256Mi"
+          memory: "256m"
           cpus: "0.25"
     networks:
       - devopsnet
@@ -124,7 +124,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: "128Mi"
+          memory: "128m"
           cpus: "0.25"
     networks:
       - devopsnet
@@ -150,7 +150,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: "512Mi"
+          memory: "512m"
           cpus: "0.5"
     networks:
       - devopsnet
@@ -181,7 +181,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: "512Mi"
+          memory: "512m"
           cpus: "0.5"
     networks:
       - devopsnet
@@ -207,7 +207,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: "128Mi"
+          memory: "128m"
           cpus: "0.25"
     networks:
       - devopsnet

@@ -17,7 +17,7 @@ COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
 COPY app.py .
-RUN adduser --system --group appuser
+RUN adduser --system --group appuser && mkdir -p /data && chown appuser:appuser /data
 USER appuser
 EXPOSE 8000
 CMD ["gunicorn", "--workers", "2", "--bind", "0.0.0.0:8000", "app:app"]
